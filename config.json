@@ -1,0 +1,29 @@
+{
+  "Program": "target/x86_64-unknown-linux-musl/release/UMCG",
+  "Args": [],
+  "Dirs": [],
+  "Files": [],
+  "Klibs": ["umcg"],
+  "KlibDir": "/root/.ops/0.1.52/klibs",
+  "RunConfig": {
+    "Ports": ["8080"],
+    "ShowDebug": true,
+    "ShowErrors": true,
+    "ShowWarnings": true,
+    "Verbose": true,
+    "Memory": "2G"
+  },
+  "ManifestPassthrough": {
+    "consoles": ["+serial", "+net"],
+    "load_klib": ["umcg"],
+    "log_level": "info",
+    "exec_wait_for_ip4_secs": "30",
+    "en1": {
+      "dhcp": "true",
+      "exec_wait_for_ip4_secs": "30"
+    },
+    "target": "umcg"
+  },
+  "NameServers": ["8.8.8.8"],
+  "NanosVersion": "nightly"
+}

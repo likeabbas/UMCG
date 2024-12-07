@@ -1,0 +1,8 @@
+{
+  "Program": "target/aarch64-unknown-linux-musl/debug/UMCG",
+  "Args": [],
+  "Dirs": [],
+  "Files": [],
+  "Klibs": ["umcg"]
+}
+
