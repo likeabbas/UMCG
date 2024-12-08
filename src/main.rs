@@ -193,7 +193,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::ptr;
 use std::io::Write;
-use UMCG::{example, example_basic, run_examples};
+use UMCG::{run_scheduler_example};
 // Add this line for flush()
 
 const SYS_UMCG_CTL: i64 = 450;
@@ -858,7 +858,9 @@ fn umcg_test_errors() {
 fn run_full_tests() {
 
     println!("Running others");
-    run_examples().expect("TODO: panic message");
+    run_scheduler_example();
+    // run_examples().expect("TODO: panic message");
+    // run_multiplex_test();
 
     println!("Running UMCG test suite...");
 
