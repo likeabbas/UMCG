@@ -1,24 +1,12 @@
-use libc::{self, pid_t, syscall, SYS_gettid};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
+use libc::{syscall, SYS_gettid, pid_t};
 
 const SYS_UMCG_CTL: i64 = 450;
 const UMCG_WORKER_ID_SHIFT: u64 = 5;
-const UMCG_WORKER_EVENT_MASK: u64 = (1 << UMCG_WORKER_ID_SHIFT) - 1;
-
-fn log(thread: &str, msg: &str) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::from_secs(0));
-    println!("[{:>10}] [{:>12}] {}",
-             format!("{:03}.{:03}", now.as_secs() % 1000, now.subsec_millis()),
-             thread,
-             msg
-    );
-}
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u64)]
@@ -42,71 +30,18 @@ enum UmcgEventType {
     Preempt,
 }
 
-impl UmcgEventType {
-    fn from_u64(value: u64) -> Option<Self> {
-        match value {
-            1 => Some(UmcgEventType::Block),
-            2 => Some(UmcgEventType::Wake),
-            3 => Some(UmcgEventType::Wait),
-            4 => Some(UmcgEventType::Exit),
-            5 => Some(UmcgEventType::Timeout),
-            6 => Some(UmcgEventType::Preempt),
-            _ => None,
-        }
-    }
+fn log_with_timestamp(msg: &str) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap();
+    println!("[{:>3}.{:03}] {}",
+             now.as_secs() % 1000,
+             now.subsec_millis(),
+             msg);
 }
 
-// Represents an I/O task
-#[derive(Debug)]
-struct Task {
-    id: usize,
-    operation: String,
-    duration: Duration,
-    completed: bool,
-}
-
-// Shared state between server and worker
-struct SharedState {
-    current_task: Option<Task>,
-    done: AtomicBool,
-}
-
-fn worker_thread(state: Arc<parking_lot::RwLock<SharedState>>) -> pid_t {
-    let tid = unsafe { syscall(SYS_gettid) } as pid_t;
-    log("worker", &format!("Started with TID: {}", tid));
-
-    // Register as a worker
-    let ret = sys_umcg_ctl(
-        0,
-        UmcgCmd::RegisterWorker,
-        0,
-        (tid as u64) << UMCG_WORKER_ID_SHIFT,
-        None,
-        0,
-    );
-    assert_eq!(ret, 0, "Failed to register worker");
-
-    // Initial signal that we're ready
-    log("worker", "Ready for tasks");
-    assert_eq!(sys_umcg_ctl(0, UmcgCmd::Wait, 0, 0, None, 0), 0);
-
-    while !state.read().done.load(Ordering::Relaxed) {
-        let guard = state.read();
-        if let Some(task) = &guard.current_task {
-            // Simulate blocking I/O with sleep
-            log("worker", &format!("Starting {} operation for task {}", task.operation, task.id));
-            drop(guard);  // Drop the lock before sleeping
-
-            // Sleep will cause the kernel to block this thread and notify the server
-            thread::sleep(task.duration);
-
-            log("worker", &format!("Completed {} operation for task {}", task.operation, task.id));
-        }
-    }
-
-    log("worker", "Exiting");
-    assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
-    tid
+fn get_thread_id() -> pid_t {
+    unsafe { syscall(SYS_gettid) as pid_t }
 }
 
 fn sys_umcg_ctl(
@@ -130,109 +65,194 @@ fn sys_umcg_ctl(
     }
 }
 
-pub fn run_scheduler_example() -> i32 {
-    // Register as server
+fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz: i32) -> i32 {
+    let mut flags = 0;
+    loop {
+        let events = events_buf.as_deref_mut();
+        let ret = sys_umcg_ctl(
+            flags,
+            UmcgCmd::Wait,
+            (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
+            0,
+            events,
+            event_sz,
+        );
+        if ret != -1 || unsafe { *libc::__errno_location() } != libc::EINTR {
+            return ret;
+        }
+        flags = 1; // UMCG_WAIT_FLAG_INTERRUPTED
+    }
+}
+
+// Generic worker function type
+type WorkerFn = Box<dyn Fn(usize) + Send + 'static>;
+
+// Worker thread function
+fn run_worker(id: usize, worker_fn: WorkerFn, workers: Arc<AtomicI32>, _done: Arc<AtomicBool>) {
+    let tid = get_thread_id();
+    log_with_timestamp(&format!("Worker {} (tid: {}) starting", id, tid));
+
+    assert_eq!(
+        sys_umcg_ctl(
+            0,
+            UmcgCmd::RegisterWorker,
+            0,
+            (tid as u64) << UMCG_WORKER_ID_SHIFT,
+            None,
+            0
+        ),
+        0
+    );
+
+    workers.fetch_add(1, Ordering::Relaxed);
+
+    worker_fn(id);
+
+    log_with_timestamp(&format!("Worker {}: Shutting down", id));
+    workers.fetch_sub(1, Ordering::Relaxed);
+    assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
+}
+
+pub fn run_umcg_workers<F>(worker_count: usize, worker_fn: F) -> i32
+where
+    F: Fn(usize) + Send + Clone + 'static
+{
+    log_with_timestamp(&format!("Starting UMCG demo with {} workers...", worker_count));
+
+    // Initialize server
     assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
-    log("server", "Registered");
 
-    // Create our task queue with simulated I/O operations
-    let mut ready_queue: VecDeque<Task> = vec![
-        Task {
-            id: 1,
-            operation: "read".into(),
-            duration: Duration::from_secs(2),
-            completed: false
-        },
-        Task {
-            id: 2,
-            operation: "write".into(),
-            duration: Duration::from_secs(1),
-            completed: false
-        },
-    ].into();
+    let workers_count = Arc::new(AtomicI32::new(0));
+    let done = Arc::new(AtomicBool::new(false));
 
-    let state = Arc::new(parking_lot::RwLock::new(SharedState {
-        current_task: None,
-        done: AtomicBool::new(false),
-    }));
+    // Spawn workers
+    let mut handles = Vec::new();
+    for i in 0..worker_count {
+        let workers = workers_count.clone();
+        let done_flag = done.clone();
+        let worker_fn = Box::new(worker_fn.clone());
 
-    // Create worker thread
-    log("server", "Creating worker thread");
-    let worker_handle = thread::spawn({
-        let state = state.clone();
-        move || worker_thread(state)
-    });
+        handles.push(thread::spawn(move || {
+            run_worker(i, worker_fn, workers, done_flag)
+        }));
+    }
 
-    // Wait for worker registration
-    let mut events = [0u64; 2];
-    log("server", "Waiting for worker registration");
-    assert_eq!(sys_umcg_ctl(0, UmcgCmd::Wait, 0, 0, Some(&mut events), 2), 0);
+    // Track runnable workers in a queue
+    let mut runnable_workers = VecDeque::new();
+    let mut completed_cycles = HashMap::new();
 
-    let worker_id = events[0] & !UMCG_WORKER_EVENT_MASK;
-    let worker_tid = (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t;
-    let event_type = UmcgEventType::from_u64(events[0] & UMCG_WORKER_EVENT_MASK)
-        .expect("Invalid event type received");
-    log("server", &format!("Worker registered - ID: {}, Event: {:?}", worker_id, event_type));
+    // Server main loop
+    let test_start = SystemTime::now();
 
-    // Main scheduling loop
-    log("server", "Starting scheduling loop");
+    while !done.load(Ordering::Relaxed) || workers_count.load(Ordering::Relaxed) != 0 {
+        let mut events = [0u64; 6]; // Space for multiple events
+        let ret = if let Some(&next_worker) = runnable_workers.front() {
+            log_with_timestamp(&format!("Server: Context switching to worker {}", next_worker));
+            sys_umcg_ctl(
+                0,
+                UmcgCmd::CtxSwitch,
+                next_worker,
+                0,
+                Some(&mut events),
+                6
+            )
+        } else {
+            log_with_timestamp("Server: Waiting for worker events...");
+            umcg_wait_retry(0, Some(&mut events), 6)
+        };
 
-    while !ready_queue.is_empty() {
-        // Schedule next task if worker is free
-        if state.read().current_task.is_none() {
-            if let Some(task) = ready_queue.pop_front() {
-                log("server", &format!("Scheduling task {} ({} operation)", task.id, task.operation));
-                state.write().current_task = Some(task);
-
-                // Context switch to worker
-                let mut events = [0u64; 2];
-                assert_eq!(
-                    sys_umcg_ctl(0, UmcgCmd::CtxSwitch, worker_tid, 0, Some(&mut events), 2),
-                    0
-                );
-
-                let event_type = UmcgEventType::from_u64(events[0] & UMCG_WORKER_EVENT_MASK)
-                    .expect("Invalid event type received");
-                log("server", &format!("Context switch result: {:?}", event_type));
-            }
+        if ret != 0 {
+            eprintln!("Server loop error");
+            return -1;
         }
 
-        // Wait for worker events
-        let mut events = [0u64; 2];
-        assert_eq!(sys_umcg_ctl(0, UmcgCmd::Wait, 0, 0, Some(&mut events), 2), 0);
+        // Process all non-zero events
+        for event in events.iter().take_while(|&&e| e != 0) {
+            let event_type = event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
+            let worker_tid = event >> UMCG_WORKER_ID_SHIFT;
 
-        let event_type = UmcgEventType::from_u64(events[0] & UMCG_WORKER_EVENT_MASK)
-            .expect("Invalid event type received");
-        log("server", &format!("Received event: {:?}", event_type));
+            match event_type {
+                1 => {  // BLOCK
+                    log_with_timestamp(&format!("Server: Worker {} blocked", worker_tid));
+                    if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
+                        runnable_workers.remove(pos);
+                    }
+                },
+                2 => {  // WAKE
+                    log_with_timestamp(&format!("Server: Worker {} woke up", worker_tid));
+                    if !runnable_workers.contains(&(worker_tid as i32)) {
+                        runnable_workers.push_back(worker_tid as i32);
+                    }
+                },
+                3 => {  // WAIT
+                    log_with_timestamp(&format!("Server: Worker {} yielded", worker_tid));
+                    if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
+                        runnable_workers.remove(pos);
+                        runnable_workers.push_back(worker_tid as i32);
+                    }
+                },
+                4 => {  // EXIT
+                    log_with_timestamp(&format!("Server: Worker {} exited", worker_tid));
+                    if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
+                        runnable_workers.remove(pos);
+                    }
+                    completed_cycles.insert(worker_tid, true);
 
-        match event_type {
-            UmcgEventType::Block => {
-                log("server", "Worker blocked on I/O operation");
-                // Just wait for the Wake event, worker is blocked
-            },
-            UmcgEventType::Wake => {
-                if let Some(task) = state.write().current_task.take() {
-                    log("server", &format!("Task {} I/O operation completed", task.id));
+                    if completed_cycles.len() == worker_count {
+                        done.store(true, Ordering::Relaxed);
+                    }
+                },
+                _ => log_with_timestamp(&format!("Server: Unknown event {} from worker {}", event_type, worker_tid)),
+            }
+
+            // Implement round-robin scheduling
+            if runnable_workers.front() == Some(&(worker_tid as i32)) {
+                if let Some(worker) = runnable_workers.pop_front() {
+                    runnable_workers.push_back(worker);
                 }
-            },
-            evt => log("server", &format!("Unexpected event: {:?}", evt)),
+            }
+
+            if event_type == 4 && completed_cycles.len() == worker_count {
+                let test_duration = SystemTime::now().duration_since(test_start).unwrap();
+                log_with_timestamp(&format!(
+                    "Test completed in {}.{:03} seconds",
+                    test_duration.as_secs(),
+                    test_duration.subsec_millis()
+                ));
+                break;
+            }
         }
     }
 
-    log("server", "All tasks complete");
-
     // Clean up
-    state.write().done.store(true, Ordering::Relaxed);
-    let worker_tid = worker_handle.join().unwrap();
-    log("server", &format!("Worker thread {} joined", worker_tid));
+    for handle in handles {
+        handle.join().unwrap();
+    }
 
     assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
-    log("server", "Unregistered");
-
+    log_with_timestamp("UMCG workers demo completed");
     0
 }
 
-fn main() {
-    log("main", "Starting UMCG scheduler example");
-    std::process::exit(run_scheduler_example());
+// Example usage - recreate our original test with 3 workers
+pub fn run_original_demo() -> i32 {
+    run_umcg_workers(3, |id| {
+        // Do exactly two sleep cycles
+        for _ in 0..2 {
+            let sleep_duration = match id {
+                0 => 2, // Worker A
+                1 => 3, // Worker B
+                _ => 4, // Worker C
+            };
+
+            log_with_timestamp(&format!("Worker {}: Starting first sleep", id));
+            thread::sleep(Duration::from_secs(sleep_duration));
+
+            log_with_timestamp(&format!("Worker {}: Between sleeps", id));
+            thread::sleep(Duration::from_secs(sleep_duration));
+
+            log_with_timestamp(&format!("Worker {}: Finished both sleeps", id));
+        }
+    })
 }
+

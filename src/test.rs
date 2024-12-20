@@ -852,6 +852,10 @@ fn umcg_test_errors() {
     println!("Error tests completed");
 }
 
+fn umcg_worker_server_basic_function() {
+
+}
+
 fn run_full_tests() {
     println!("Running UMCG test suite...");
 
