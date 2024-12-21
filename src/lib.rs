@@ -1,14 +1,15 @@
-
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::{VecDeque, HashMap};
-use libc::{syscall, SYS_gettid, pid_t};
 
 const SYS_UMCG_CTL: i64 = 450;
 const UMCG_WORKER_ID_SHIFT: u64 = 5;
+const UMCG_WORKER_EVENT_MASK: u64 = (1 << UMCG_WORKER_ID_SHIFT) - 1;
+const UMCG_WAIT_FLAG_INTERRUPTED: u64 = 1;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u64)]
@@ -52,22 +53,6 @@ enum TaskState {
     Completed,
 }
 
-impl Clone for TaskState {
-    fn clone(&self) -> Self {
-        match self {
-            TaskState::Pending(_) => panic!("Cannot clone a pending task"),
-            TaskState::Running { worker_tid, start_time, preempted, blocked, state } => TaskState::Running {
-                worker_tid: *worker_tid,
-                start_time: *start_time,
-                preempted: *preempted,
-                blocked: *blocked,
-                state: state.clone(),
-            },
-            TaskState::Completed => TaskState::Completed,
-        }
-    }
-}
-
 enum Task {
     Function(Box<dyn FnOnce(&TaskHandle) + Send>),
     Shutdown,
@@ -87,23 +72,40 @@ impl TaskHandle {
     }
 }
 
+#[derive(Clone)]
+struct ExecutorConfig {
+    server_count: usize,
+}
+
+impl Default for ExecutorConfig {
+    fn default() -> Self {
+        Self {
+            server_count: 1,
+        }
+    }
+}
+
 struct Executor {
-    tasks: Mutex<VecDeque<Task>>,
     servers: Mutex<Vec<Server>>,
-    server_task_txs: Mutex<Vec<Sender<Task>>>,
+    next_server: AtomicUsize,
+    config: ExecutorConfig,
 }
 
 impl Executor {
-    fn new(server_count: usize) -> Arc<Self> {
+    fn new(config: ExecutorConfig) -> Arc<Self> {
+        let server_count = config.server_count;
         let executor = Arc::new(Self {
-            tasks: Mutex::new(VecDeque::with_capacity(server_count * 3)),
             servers: Mutex::new(Vec::with_capacity(server_count)),
-            server_task_txs: Mutex::new(Vec::with_capacity(server_count)),
+            next_server: AtomicUsize::new(0),
+            config,
         });
 
-        for i in 0..server_count {
-            let server = Server::new(i, executor.clone());
-            executor.servers.lock().unwrap().push(server);
+        let executor_clone = executor.clone();
+        {
+            let mut servers = executor_clone.servers.lock().unwrap();
+            for i in 0..server_count {
+                servers.push(Server::new(i, executor_clone.clone()));
+            }
         }
 
         executor
@@ -111,9 +113,13 @@ impl Executor {
 
     fn submit(&self, task: Box<dyn FnOnce(&TaskHandle) + Send>) {
         log_with_timestamp("Queuing new task");
+
+        let server_idx = self.next_server.fetch_add(1, Ordering::Relaxed) % self.config.server_count;
+
         let servers = self.servers.lock().unwrap();
-        if let Some(server) = servers.first() {
+        if let Some(server) = servers.get(server_idx) {
             server.add_task(Task::Function(task));
+            log_with_timestamp(&format!("Task assigned to server {}", server_idx));
         }
     }
 
@@ -125,79 +131,8 @@ impl Executor {
     }
 }
 
-struct Worker {
-    id: usize,
-    tid: pid_t,
-    task_rx: Receiver<Task>,
-    handle: TaskHandle,
-}
-
-impl Worker {
-    fn new(id: usize, task_rx: Receiver<Task>, executor: Arc<Executor>) -> Self {
-        Self {
-            id,
-            tid: 0,
-            task_rx,
-            handle: TaskHandle { executor },
-        }
-    }
-
-    fn start(mut self, workers_count: Arc<AtomicI32>, done: Arc<AtomicBool>) -> JoinHandle<()> {
-        thread::spawn(move || {
-            self.tid = get_thread_id();
-            log_with_timestamp(&format!("Worker {}: Initialized with tid {}", self.id, self.tid));
-
-            assert_eq!(
-                sys_umcg_ctl(
-                    0,
-                    UmcgCmd::RegisterWorker,
-                    0,
-                    (self.tid as u64) << UMCG_WORKER_ID_SHIFT,
-                    None,
-                    0
-                ),
-                0
-            );
-
-            workers_count.fetch_add(1, Ordering::Relaxed);
-
-            loop {
-                match self.task_rx.try_recv() {
-                    Ok(task) => {
-                        match task {
-                            Task::Function(task) => {
-                                log_with_timestamp(&format!("Worker {}: Starting task execution", self.id));
-                                task(&self.handle);
-                                log_with_timestamp(&format!("Worker {}: Completed task execution", self.id));
-                                thread::sleep(Duration::from_millis(100));
-                            }
-                            Task::Shutdown => {
-                                log_with_timestamp(&format!("Worker {}: Received shutdown signal", self.id));
-                                break;
-                            }
-                        }
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        if done.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        break;
-                    }
-                }
-            }
-
-            log_with_timestamp(&format!("Worker {}: Shutting down", self.id));
-            workers_count.fetch_sub(1, Ordering::Relaxed);
-            assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
-        })
-    }
-}
-
 struct TaskTracker {
-    task_states: HashMap<i32, TaskState>,  // worker_tid -> TaskState
+    task_states: HashMap<i32, TaskState>,
 }
 
 impl TaskTracker {
@@ -218,20 +153,16 @@ impl TaskTracker {
     }
 
     fn mark_blocked(&mut self, worker_tid: i32) {
-        if let Some(state) = self.task_states.get_mut(&worker_tid) {
-            if let TaskState::Running { ref mut blocked, ref mut state, .. } = state {
-                *blocked = true;
-                *state = WorkerState::Blocked;
-            }
+        if let Some(TaskState::Running { ref mut blocked, ref mut state, .. }) = self.task_states.get_mut(&worker_tid) {
+            *blocked = true;
+            *state = WorkerState::Blocked;
         }
     }
 
     fn mark_unblocked(&mut self, worker_tid: i32) {
-        if let Some(state) = self.task_states.get_mut(&worker_tid) {
-            if let TaskState::Running { ref mut blocked, ref mut state, .. } = state {
-                *blocked = false;
-                *state = WorkerState::Running;
-            }
+        if let Some(TaskState::Running { ref mut blocked, ref mut state, .. }) = self.task_states.get_mut(&worker_tid) {
+            *blocked = false;
+            *state = WorkerState::Running;
         }
     }
 
@@ -276,17 +207,60 @@ impl Server {
         log_with_timestamp(&format!("Server {}: Queued new task. Queue size now {}", self.id, queue.len()));
     }
 
+    fn process_event(&self, event: u64) {
+        let event_type = event & UMCG_WORKER_EVENT_MASK;
+        let worker_tid = (event >> UMCG_WORKER_ID_SHIFT) as i32;
+
+        match event_type {
+            1 => { // BLOCK
+                log_with_timestamp(&format!("Server {}: Worker {} blocked", self.id, worker_tid));
+                self.task_tracker.lock().unwrap().mark_blocked(worker_tid);
+                let mut runnable_workers = self.runnable_workers.lock().unwrap();
+                if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid) {
+                    runnable_workers.remove(pos);
+                }
+            },
+            2 => { // WAKE
+                log_with_timestamp(&format!("Server {}: Worker {} woke up", self.id, worker_tid));
+                self.task_tracker.lock().unwrap().mark_unblocked(worker_tid);
+                let mut runnable_workers = self.runnable_workers.lock().unwrap();
+                if !runnable_workers.contains(&worker_tid) {
+                    runnable_workers.push_back(worker_tid);
+                }
+            },
+            3 => { // WAIT
+                log_with_timestamp(&format!("Server {}: Worker {} waiting", self.id, worker_tid));
+                let mut runnable_workers = self.runnable_workers.lock().unwrap();
+                if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid) {
+                    runnable_workers.remove(pos);
+                    runnable_workers.push_back(worker_tid);
+                }
+            },
+            4 => { // EXIT
+                log_with_timestamp(&format!("Server {}: Worker {} exited", self.id, worker_tid));
+                self.task_tracker.lock().unwrap().mark_completed(worker_tid);
+                let mut runnable_workers = self.runnable_workers.lock().unwrap();
+                if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid) {
+                    runnable_workers.remove(pos);
+                }
+                self.completed_cycles.lock().unwrap().insert(worker_tid as u64, true);
+                self.worker_count.fetch_sub(1, Ordering::SeqCst);
+            },
+            _ => log_with_timestamp(&format!("Server {}: Unknown event {} from worker {}",
+                                             self.id, event_type, worker_tid)),
+        }
+    }
+
     fn start(self) -> JoinHandle<()> {
         thread::spawn(move || {
             log_with_timestamp(&format!("Server {}: Starting up", self.id));
             assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
 
-            let test_start = SystemTime::now();
             let mut worker_handles = Vec::new();
             let mut next_worker_id = 0;
 
-            while !self.done.load(Ordering::Relaxed) || self.workers_count.load(Ordering::Relaxed) != 0 {
-                // Check task queue for new tasks
+            while !self.done.load(Ordering::Relaxed) {
+                // Process new tasks
                 if let Some(task) = self.task_queue.lock().unwrap().pop_front() {
                     let worker_id = next_worker_id;
                     next_worker_id += 1;
@@ -301,12 +275,14 @@ impl Server {
                         self.executor.clone(),
                     );
 
+                    self.worker_count.fetch_add(1, Ordering::SeqCst);
                     worker_handles.push(worker.start(
                         self.workers_count.clone(),
                         self.done.clone(),
                     ));
                 }
 
+                // Process worker events
                 let mut events = [0u64; 6];
                 let ret = if let Some(&next_worker) = self.runnable_workers.lock().unwrap().front() {
                     log_with_timestamp(&format!("Server {}: Context switching to worker {}", self.id, next_worker));
@@ -325,80 +301,90 @@ impl Server {
                     self.process_event(event);
                 }
 
-                if self.workers_count.load(Ordering::Relaxed) == 0
+                // Check if server should exit
+                if self.worker_count.load(Ordering::SeqCst) == 0
                     && self.task_queue.lock().unwrap().is_empty() {
-                    self.done.store(true, Ordering::Relaxed);
+                    break;
                 }
             }
 
+            // Clean shutdown
+            self.done.store(true, Ordering::Relaxed);
             for handle in worker_handles {
                 handle.join().unwrap();
             }
 
-            let test_duration = SystemTime::now().duration_since(test_start).unwrap();
-            log_with_timestamp(&format!(
-                "Server {}: All tasks completed in {}.{:03} seconds",
-                self.id,
-                test_duration.as_secs(),
-                test_duration.subsec_millis()
-            ));
-
             assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
+            log_with_timestamp(&format!("Server {}: Shutdown complete", self.id));
         })
-    }
-
-    fn process_event(&self, event: u64) {
-        let event_type = event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
-        let worker_tid = event >> UMCG_WORKER_ID_SHIFT;
-
-        match event_type {
-            1 => { // BLOCK
-                log_with_timestamp(&format!("Server {}: Worker {} blocked", self.id, worker_tid));
-                self.task_tracker.lock().unwrap().mark_blocked(worker_tid as i32);
-                let mut runnable_workers = self.runnable_workers.lock().unwrap();
-                if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
-                    runnable_workers.remove(pos);
-                }
-            },
-            2 => { // WAKE
-                log_with_timestamp(&format!("Server {}: Worker {} woke up", self.id, worker_tid));
-                self.task_tracker.lock().unwrap().mark_unblocked(worker_tid as i32);
-                let mut runnable_workers = self.runnable_workers.lock().unwrap();
-                if !runnable_workers.contains(&(worker_tid as i32)) {
-                    runnable_workers.push_back(worker_tid as i32);
-                }
-            },
-            3 => { // WAIT
-                log_with_timestamp(&format!("Server {}: Worker {} yielded", self.id, worker_tid));
-                let mut runnable_workers = self.runnable_workers.lock().unwrap();
-                if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
-                    runnable_workers.remove(pos);
-                    runnable_workers.push_back(worker_tid as i32);
-                }
-            },
-            4 => { // EXIT
-                log_with_timestamp(&format!("Server {}: Worker {} exited", self.id, worker_tid));
-                self.task_tracker.lock().unwrap().mark_completed(worker_tid as i32);
-                let mut runnable_workers = self.runnable_workers.lock().unwrap();
-                if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
-                    runnable_workers.remove(pos);
-                }
-                self.completed_cycles.lock().unwrap().insert(worker_tid, true);
-            },
-            _ => log_with_timestamp(&format!("Server {}: Unknown event {} from worker {}",
-                                             self.id, event_type, worker_tid)),
-        }
     }
 }
 
-fn log_with_timestamp(msg: &str) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap();
-    println!("[{:>3}.{:03}] {}",
-             now.as_secs() % 1000,
-             now.subsec_millis(),
-             msg);
+struct Worker {
+    id: usize,
+    tid: pid_t,
+    task_rx: Receiver<Task>,
+    handle: TaskHandle,
+}
+
+impl Worker {
+    fn new(id: usize, task_rx: Receiver<Task>, executor: Arc<Executor>) -> Self {
+        Self {
+            id,
+            tid: 0,
+            task_rx,
+            handle: TaskHandle { executor },
+        }
+    }
+
+    fn start(mut self, workers_count: Arc<AtomicI32>, done: Arc<AtomicBool>) -> JoinHandle<()> {
+        thread::spawn(move || {
+            self.tid = get_thread_id();
+            log_with_timestamp(&format!("Worker {}: Initialized with tid {}", self.id, self.tid));
+
+            assert_eq!(
+                sys_umcg_ctl(
+                    0,
+                    UmcgCmd::RegisterWorker,
+                    0,
+                    (self.tid as u64) << UMCG_WORKER_ID_SHIFT,
+                    None,
+                    0
+                ),
+                0
+            );
+
+            workers_count.fetch_add(1, Ordering::Relaxed);
+
+            while !done.load(Ordering::Relaxed) {
+                match self.task_rx.try_recv() {
+                    Ok(Task::Function(task)) => {
+                        log_with_timestamp(&format!("Worker {}: Starting task execution", self.id));
+                        task(&self.handle);
+                        log_with_timestamp(&format!("Worker {}: Completed task execution", self.id));
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    Ok(Task::Shutdown) => {
+                        log_with_timestamp(&format!("Worker {}: Received shutdown signal", self.id));
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        if done.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        break;
+                    }
+                }
+            }
+
+            log_with_timestamp(&format!("Worker {}: Shutting down", self.id));
+            workers_count.fetch_sub(1, Ordering::Relaxed);
+            assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
+        })
+    }
 }
 
 fn get_thread_id() -> pid_t {
@@ -438,58 +424,37 @@ fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz:
             events,
             event_sz,
         );
-        if ret != -1 || unsafe { *libc::__errno_location() } != libc::EINTR {
+        if ret != -1 || unsafe { *libc::__errno_location() } != EINTR {
             return ret;
         }
-        flags = 1; // UMCG_WAIT_FLAG_INTERRUPTED
+        flags = UMCG_WAIT_FLAG_INTERRUPTED;
     }
 }
 
-pub fn run_umcg_workers<F>(worker_count: usize, worker_fn: F) -> i32
-where
-    F: Fn(usize) + Send + Clone + 'static
-{
-    log_with_timestamp(&format!("Starting UMCG demo with {} workers...", worker_count));
-
-    let server = Server::new(0, Executor::new(1));
-    let mut handles = Vec::new();
-
-    // Create and start workers
-    for i in 0..worker_count {
-        let (tx, rx) = channel();
-        let worker = Worker::new(i, rx, server.executor.clone());
-
-        // Send initial task
-        let worker_fn = worker_fn.clone();
-        tx.send(Task::Function(Box::new(move |_| worker_fn(i)))).unwrap();
-
-        handles.push(worker.start(server.workers_count.clone(), server.done.clone()));
-    }
-
-    // Run server
-    let server_handle = server.clone().start();
-
-    // Clean up
-    for handle in handles {
-        handle.join().unwrap();
-    }
-    server_handle.join().unwrap();
-
-    0
+fn log_with_timestamp(msg: &str) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap();
+    println!("[{:>3}.{:03}] {}",
+             now.as_secs() % 1000,
+             now.subsec_millis(),
+             msg);
 }
 
 pub fn run_dynamic_task_demo() -> i32 {
-    let executor = Executor::new(1);
+    let config = ExecutorConfig {
+        server_count: 1,
+    };
+    let executor = Executor::new(config);
 
-    // Submit all initial tasks
     log_with_timestamp("Submitting initial tasks...");
+
     for i in 0..3 {
         let task = move |handle: &TaskHandle| {
             log_with_timestamp(&format!("Initial task {}: Starting task", i));
             thread::sleep(Duration::from_secs(2));
             log_with_timestamp(&format!("Initial task {}: Preparing to spawn child task", i));
 
-            // Spawn a new task
             let parent_id = i;
             handle.submit(move |_| {
                 log_with_timestamp(&format!("Child task of initial task {}: Starting work", parent_id));
@@ -509,5 +474,39 @@ pub fn run_dynamic_task_demo() -> i32 {
     executor.start();
 
     thread::sleep(Duration::from_secs(10));
+    0
+}
+
+pub fn run_multi_server_demo() -> i32 {
+    let config = ExecutorConfig {
+        server_count: 3,
+    };
+    let executor = Executor::new(config);
+
+    log_with_timestamp("Submitting tasks to multiple servers...");
+
+    for i in 0..9 {
+        let task = move |handle: &TaskHandle| {
+            log_with_timestamp(&format!("Task {}: Starting execution", i));
+            thread::sleep(Duration::from_secs(1));
+
+            let parent_id = i;
+            handle.submit(move |_| {
+                log_with_timestamp(&format!("Child of task {}: Starting work", parent_id));
+                thread::sleep(Duration::from_millis(500));
+                log_with_timestamp(&format!("Child of task {}: Completed", parent_id));
+            });
+
+            log_with_timestamp(&format!("Task {}: Completed", i));
+        };
+
+        executor.submit(Box::new(task));
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    log_with_timestamp("All tasks submitted, starting servers...");
+    executor.start();
+
+    thread::sleep(Duration::from_secs(15));
     0
 }
