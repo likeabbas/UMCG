@@ -1,3 +1,4 @@
+
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Sender, Receiver};
@@ -29,6 +30,42 @@ enum UmcgEventType {
     Exit,
     Timeout,
     Preempt,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum WorkerState {
+    Running,
+    Blocked,
+    Preempted,
+    Completed,
+}
+
+enum TaskState {
+    Pending(Box<dyn FnOnce(&TaskHandle) + Send>),
+    Running {
+        worker_tid: i32,
+        start_time: SystemTime,
+        preempted: bool,
+        blocked: bool,
+        state: WorkerState,
+    },
+    Completed,
+}
+
+impl Clone for TaskState {
+    fn clone(&self) -> Self {
+        match self {
+            TaskState::Pending(_) => panic!("Cannot clone a pending task"),
+            TaskState::Running { worker_tid, start_time, preempted, blocked, state } => TaskState::Running {
+                worker_tid: *worker_tid,
+                start_time: *start_time,
+                preempted: *preempted,
+                blocked: *blocked,
+                state: state.clone(),
+            },
+            TaskState::Completed => TaskState::Completed,
+        }
+    }
 }
 
 enum Task {
@@ -64,7 +101,6 @@ impl Executor {
             server_task_txs: Mutex::new(Vec::with_capacity(server_count)),
         });
 
-        // Initialize servers
         for i in 0..server_count {
             let server = Server::new(i, executor.clone());
             executor.servers.lock().unwrap().push(server);
@@ -160,10 +196,57 @@ impl Worker {
     }
 }
 
+struct TaskTracker {
+    task_states: HashMap<i32, TaskState>,  // worker_tid -> TaskState
+}
+
+impl TaskTracker {
+    fn new() -> Self {
+        Self {
+            task_states: HashMap::new(),
+        }
+    }
+
+    fn track_new_task(&mut self, worker_tid: i32) {
+        self.task_states.insert(worker_tid, TaskState::Running {
+            worker_tid,
+            start_time: SystemTime::now(),
+            preempted: false,
+            blocked: false,
+            state: WorkerState::Running,
+        });
+    }
+
+    fn mark_blocked(&mut self, worker_tid: i32) {
+        if let Some(state) = self.task_states.get_mut(&worker_tid) {
+            if let TaskState::Running { ref mut blocked, ref mut state, .. } = state {
+                *blocked = true;
+                *state = WorkerState::Blocked;
+            }
+        }
+    }
+
+    fn mark_unblocked(&mut self, worker_tid: i32) {
+        if let Some(state) = self.task_states.get_mut(&worker_tid) {
+            if let TaskState::Running { ref mut blocked, ref mut state, .. } = state {
+                *blocked = false;
+                *state = WorkerState::Running;
+            }
+        }
+    }
+
+    fn mark_completed(&mut self, worker_tid: i32) {
+        if self.task_states.contains_key(&worker_tid) {
+            self.task_states.insert(worker_tid, TaskState::Completed);
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Server {
     id: usize,
-    task_queue: Arc<Mutex<VecDeque<Task>>>,  // Replace task_rx with a queue
+    task_queue: Arc<Mutex<VecDeque<Task>>>,
+    task_tracker: Arc<Mutex<TaskTracker>>,
     executor: Arc<Executor>,
     runnable_workers: Arc<Mutex<VecDeque<i32>>>,
     completed_cycles: Arc<Mutex<HashMap<u64, bool>>>,
@@ -177,6 +260,7 @@ impl Server {
         Self {
             id,
             task_queue: Arc::new(Mutex::new(VecDeque::new())),
+            task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             executor,
             runnable_workers: Arc::new(Mutex::new(VecDeque::new())),
             completed_cycles: Arc::new(Mutex::new(HashMap::new())),
@@ -207,7 +291,6 @@ impl Server {
                     let worker_id = next_worker_id;
                     next_worker_id += 1;
                     log_with_timestamp(&format!("Server {}: Creating worker {} for task", self.id, worker_id));
-                    self.worker_count.fetch_add(1, Ordering::Relaxed);
 
                     let (tx, rx) = channel();
                     tx.send(task).unwrap();
@@ -271,6 +354,7 @@ impl Server {
         match event_type {
             1 => { // BLOCK
                 log_with_timestamp(&format!("Server {}: Worker {} blocked", self.id, worker_tid));
+                self.task_tracker.lock().unwrap().mark_blocked(worker_tid as i32);
                 let mut runnable_workers = self.runnable_workers.lock().unwrap();
                 if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
                     runnable_workers.remove(pos);
@@ -278,6 +362,7 @@ impl Server {
             },
             2 => { // WAKE
                 log_with_timestamp(&format!("Server {}: Worker {} woke up", self.id, worker_tid));
+                self.task_tracker.lock().unwrap().mark_unblocked(worker_tid as i32);
                 let mut runnable_workers = self.runnable_workers.lock().unwrap();
                 if !runnable_workers.contains(&(worker_tid as i32)) {
                     runnable_workers.push_back(worker_tid as i32);
@@ -293,6 +378,7 @@ impl Server {
             },
             4 => { // EXIT
                 log_with_timestamp(&format!("Server {}: Worker {} exited", self.id, worker_tid));
+                self.task_tracker.lock().unwrap().mark_completed(worker_tid as i32);
                 let mut runnable_workers = self.runnable_workers.lock().unwrap();
                 if let Some(pos) = runnable_workers.iter().position(|&x| x == worker_tid as i32) {
                     runnable_workers.remove(pos);
@@ -301,14 +387,6 @@ impl Server {
             },
             _ => log_with_timestamp(&format!("Server {}: Unknown event {} from worker {}",
                                              self.id, event_type, worker_tid)),
-        }
-
-        // Implement round-robin scheduling
-        let mut runnable_workers = self.runnable_workers.lock().unwrap();
-        if runnable_workers.front() == Some(&(worker_tid as i32)) {
-            if let Some(worker) = runnable_workers.pop_front() {
-                runnable_workers.push_back(worker);
-            }
         }
     }
 }
@@ -373,7 +451,7 @@ where
 {
     log_with_timestamp(&format!("Starting UMCG demo with {} workers...", worker_count));
 
-    let mut server = Server::new(0, Executor::new(1));  // No need for channel anymore
+    let server = Server::new(0, Executor::new(1));
     let mut handles = Vec::new();
 
     // Create and start workers
@@ -424,8 +502,6 @@ pub fn run_dynamic_task_demo() -> i32 {
 
         log_with_timestamp(&format!("Submitting initial task {}", i));
         executor.submit(Box::new(task));
-
-        // Small delay between submissions to ensure ordering
         thread::sleep(Duration::from_millis(10));
     }
 
