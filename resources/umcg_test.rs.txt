@@ -1,11 +1,122 @@
+/*
+
+
+UMCG is a proposed extension to the linux kernel which (I think) allows people to write “green-threads”: (M:N) easier by letting the UMCG Server. Except in our case, everything is still backed by a kernel thread. This works because UMCG can context switch in 10-50 nanoseconds. so really it’s not green threading as much as we’re making a faster linux thread scheduling system.
+
+For us, we have UMCG Server threads which handle the scheduling. And UMCG worker threads which do this work. So workers would be M and Servers would be N
+
+Here are the main events:
+UMCG_WE_BLOCK (value 1):
+* Triggered when a worker thread blocks, typically on I/O or when entering a syscall
+* The worker notifies its server that it's no longer runnable
+* This allows the server to schedule other workers while this one is blocked
+UMCG_WE_WAKE (value 2):
+* Triggered when a previously blocked worker becomes runnable again
+* The worker is added back to the idle workers list
+* Signals that the worker is ready to be scheduled again
+UMCG_WE_WAIT (value 3):
+* Triggered when a worker voluntarily yields/pauses execution
+* Different from BLOCK in that the worker is still runnable but is giving up its timeslice
+* Used for cooperative multitasking between workers
+UMCG_WE_EXIT (value 4):
+* Triggered when a worker thread is terminating
+* Allows the server to clean up resources and remove the worker from its scheduling lists
+UMCG_WE_TIMEOUT (value 5):
+* Triggered when a worker's scheduled timeslice expires
+* Used in cases where a worker has been running for too long and needs to be preempted
+UMCG_WE_PREEMPT (value 6):
+* Triggered when a worker is forcibly preempted by the scheduler
+* Similar to TIMEOUT but initiated by the scheduler rather than a timer
+* Used to enforce fair scheduling by preventing any single worker from monopolizing CPU time
+
+And here are the other UMCG CMDs
+Let me explain each UMCG command and its purpose:
+RegisterWorker (value 1):
+* Used by a thread to register itself as a UMCG worker
+* Takes a worker ID (thread ID shifted left by UMCG_WORKER_ID_SHIFT)
+* Allows the thread to be managed by UMCG servers
+* After registration, the worker can participate in UMCG scheduling
+RegisterServer (value 2):
+* Used by a thread to register itself as a UMCG server
+* Servers manage and schedule workers
+* Can receive worker events and make scheduling decisions
+* One server can manage multiple workers
+1. Unregister (value 3):
+* Used by both workers and servers to unregister from UMCG
+* Cleans up resources and state
+* Required before thread termination
+* Notifies other components that the worker/server is leaving the system
+Wake (value 4):
+* Used to wake up an idle server
+* Typically used when new work is available
+* Returns EAGAIN if no idle servers are available
+Wait (value 5):
+* Used by both workers and servers to wait for events
+* Workers use it to yield their execution
+* Servers use it to receive worker events
+* Can include a timeout value
+* Can be interrupted by signals
+CtxSwitch (value 6):
+* Used to perform a context switch between workers
+* Allows direct switching from one worker to another
+* Used by servers to manage worker execution
+* Can include event buffers to receive notifications about worker state changes
+
+
+
+I’ve included the actual mbox patch proposed to the linux kernel. But NanoVMs created a klib for us to be able to use UMCG and I included that diff as well. NanoVMs wrote tests for the KLIB and I The first doc is the kernel patch diff. NanoVMs included it as a klib, and they wrote some tests. I re-wrote the C tests in Rust, and they work.
+
+
+```➜  /app git:(master) ✗ ops run -c config.json target/x86_64-unknown-linux-musl/release/UMCG
+running local instance
+booting /root/.ops/images/UMCG ...
+en1: assigned 10.0.2.15
+Running full test suite...
+Running scheduler
+Running UMCG test suite...
+Running umcg perf test
+UMCG performance test duration: 10 seconds...
+en1: assigned FE80::EC54:7FF:FE55:B6C3
+Results: 401436 cycles (40141.327226151385 cycles/sec)
+
+Running basic tests...
+Basic tests passed!
+
+Running server-to-server tests...
+
+Running error condition tests...
+Starting error tests...
+Invalid registration test passed
+Server registered
+Self context-switch test passed
+Invalid buffer size test passed
+Timeout test passed
+Poll test passed
+Testing invalid parameter combinations...
+Invalid wait params test passed
+Invalid wait params test 2 passed
+CtxSwitch test returned: -1 with errno: 3
+Invalid ctx switch test passed
+Non-existing thread switch returned: -1 with errno: 3
+Non-existing thread test passed
+Wake idle server test passed
+Error tests completed
+
+All tests completed successfully!```
+
+Now, I’m trying to leverage build a better working example in Rust. I **hate** async/await, and if there’s a faster way to use normal kernel threads I’m all for it.
+*/
+
+
 use libc::{self, c_int, pid_t, syscall, SYS_gettid, CLOCK_REALTIME, timespec, EINTR, EINVAL, ETIMEDOUT, ESRCH, EFAULT, EAGAIN};
+use std::sync::mpsc::{channel, Sender, Receiver};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::ptr;
 use std::io::Write;
-use UMCG::{run_dynamic_task_demo, run_multi_server_demo};
+use UMCG::{run_multiplex_test};
 // Add this line for flush()
 
 const SYS_UMCG_CTL: i64 = 450;
@@ -667,73 +778,17 @@ fn umcg_test_errors() {
     println!("Error tests completed");
 }
 
-fn umcg_perftest() -> i32 {
-    let mut cycles = 0i64;
-    let worker = thread::spawn(|| {
-        let tid = get_thread_id();
-        assert_eq!(
-            sys_umcg_ctl(
-                0,
-                UmcgCmd::RegisterWorker,
-                0,
-                ((tid as u64) << UMCG_WORKER_ID_SHIFT),
-                None,
-                0
-            ),
-            0
-        );
-        while !DONE.load(Ordering::Relaxed) {
-            assert_eq!(sys_umcg_ctl(0, UmcgCmd::Wait, 0, 0, None, 0), 0);
-        }
-        assert_eq!(sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0), 0);
-    });
-
-    println!("UMCG performance test duration: 10 seconds...");
-    assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
-
-    // Wait for worker to register
-    let worker_id = umcg_wait_any_worker(UmcgEventType::Wake);
-    let start = SystemTime::now();
-
-    while !DONE.load(Ordering::Relaxed) {
-        umcg_ctxsw_assert_worker_event(worker_id, UmcgEventType::Wait);
-        cycles += 1;
-
-        if start.elapsed().unwrap() >= Duration::from_secs(10) {
-            DONE.store(true, Ordering::Relaxed);
-        }
-    }
-
-    let duration = start.elapsed().unwrap().as_secs_f64();
-    println!(
-        "Results: {} cycles ({} cycles/sec)",
-        cycles,
-        cycles as f64 / duration
-    );
-
-    umcg_ctxsw_assert_worker_event(worker_id, UmcgEventType::Exit);
-    worker.join().unwrap();
-    0
-}
-
 fn run_full_tests() {
 
-    // run_http_server();
-
-    println!("Running run_dynamic_task_demo");
-    run_dynamic_task_demo();
-
-    println!("Running run_multi_server_demo");
-    run_multi_server_demo();
+    println!("Running others");
+    // run_examples().expect("TODO: panic message");
+    run_multiplex_test();
 
     println!("Running UMCG test suite...");
 
-    println!("Running umcg perf test");
-    umcg_perftest();
-
     println!("\nRunning basic tests...");
     umcg_test_basic();
-    run_basic_tests();
+
     println!("\nRunning server-to-server tests...");
     umcg_test_server2server();
 
@@ -765,4 +820,3 @@ fn main() {
         }
     }
 }
-
