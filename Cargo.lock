@@ -15,6 +15,7 @@ dependencies = [
  "rand",
  "solicit",
  "tiny_http",
+ "uuid",
 ]
 
 [[package]]
@@ -171,6 +172,17 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4567c8db10ae91089c99af84c68c38da3ec2f087c3f82960bcdbf3656b6f4d7"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasi 0.11.0+wasi-snapshot-preview1",
+]
+
+[[package]]
+name = "getrandom"
 version = "0.3.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a78f88e84d239c7f2619ae8b091603c26208e1cb322571f5a29d6806f56ee5e"
@@ -179,7 +191,7 @@ dependencies = [
  "js-sys",
  "libc",
  "rustix",
- "wasi",
+ "wasi 0.13.3+wasi-0.2.2",
  "wasm-bindgen",
  "windows-targets",
 ]
@@ -388,7 +400,7 @@ version = "0.9.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a98fa0b8309344136abe6244130311e76997e546f76fae8054422a7539b43df7"
 dependencies = [
- "getrandom",
+ "getrandom 0.3.0-rc.0",
  "zerocopy 0.8.13",
 ]
 
@@ -470,6 +482,21 @@ name = "unicode-ident"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb9e6ca4f869e1180728b7950e35922a7fc6397f7b641499e8f3ef06e50dc83"
+
+[[package]]
+name = "uuid"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8c5f0a0af699448548ad1a2fbf920fb4bee257eae39953ba95cb84891a0446a"
+dependencies = [
+ "getrandom 0.2.15",
+]
+
+[[package]]
+name = "wasi"
+version = "0.11.0+wasi-snapshot-preview1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
 
 [[package]]
 name = "wasi"

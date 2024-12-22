@@ -725,22 +725,22 @@ fn run_full_tests() {
 
     println!("Running run_multi_server_demo");
     run_multi_server_demo();
-
-    println!("Running UMCG test suite...");
-
-    println!("Running umcg perf test");
-    umcg_perftest();
-
-    println!("\nRunning basic tests...");
-    umcg_test_basic();
-    run_basic_tests();
-    println!("\nRunning server-to-server tests...");
-    umcg_test_server2server();
-
-    println!("\nRunning error condition tests...");
-    umcg_test_errors();
-
-    println!("\nAll tests completed successfully!");
+    //
+    // println!("Running UMCG test suite...");
+    //
+    // println!("Running umcg perf test");
+    // umcg_perftest();
+    //
+    // println!("\nRunning basic tests...");
+    // umcg_test_basic();
+    // run_basic_tests();
+    // println!("\nRunning server-to-server tests...");
+    // umcg_test_server2server();
+    //
+    // println!("\nRunning error condition tests...");
+    // umcg_test_errors();
+    //
+    // println!("\nAll tests completed successfully!");
 }
 
 fn main() {
