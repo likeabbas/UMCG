@@ -10,6 +10,7 @@ dependencies = [
  "crossbeam",
  "io-uring",
  "libc",
+ "log 0.4.22",
  "num_cpus",
  "parking_lot",
  "rand",

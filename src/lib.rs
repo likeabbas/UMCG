@@ -6,6 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 use std::collections::{VecDeque, HashMap, HashSet};
 use uuid::Uuid;
+use log::error;
 
 static DEBUG_LOGGING: bool = true;
 
@@ -280,23 +281,20 @@ impl Worker {
         // Extract the task_fn, but only send it if the channel is available
         match &task.state {
             TaskState::Pending(_) => {
-                // Test channel first before moving task_fn
-                match tx.send(Task::Shutdown) {
-                    Ok(_) => {
-                        // Channel works, now we can safely extract and send task_fn
-                        if let TaskState::Pending(task_fn) = std::mem::replace(&mut task.state, TaskState::Completed) {
-                            // Send the actual task
-                            let _ = tx.send(Task::Function(task_fn));
+                // Extract and send the actual task
+                if let TaskState::Pending(task_fn) = std::mem::replace(&mut task.state, TaskState::Completed) {
+                    match tx.send(Task::Function(task_fn)) {
+                        Ok(_) => {
                             debug!("Worker {}: Task sent successfully", self.id);
                             Ok(())
-                        } else {
-                            unreachable!()
+                        },
+                        Err(_) => {
+                            debug!("Worker {}: Channel is disconnected", self.id);
+                            Err(task)  // Return original task untouched
                         }
-                    },
-                    Err(_) => {
-                        debug!("Worker {}: Channel is disconnected", self.id);
-                        Err(task)  // Return original task untouched
                     }
+                } else {
+                    unreachable!()
                 }
             },
             _ => Ok(())
@@ -313,77 +311,62 @@ struct WorkerThread {
     cpu_id: usize,
 }
 
+impl WorkerThread {
+    fn new(
+        id: usize,
+        server_id: usize,
+        cpu_id: usize,
+        executor: Arc<Executor>,
+        task_rx: Receiver<Task>,
+    ) -> Self {
+        Self {
+            id,
+            tid: 0,
+            task_rx,
+            handle: TaskHandle { executor },
+            server_id,
+            cpu_id,
+        }
+    }
+}
+
 struct WorkerPool {
-    available_workers: Arc<Mutex<VecDeque<(Worker, Sender<Task>)>>>,
+    available_workers: Arc<Mutex<HashMap<pid_t, (Worker, Sender<Task>)>>>,
     worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    worker_channels: Arc<Mutex<HashMap<pid_t, Sender<Task>>>>,  // Store channels permanently
     total_workers: usize,
 }
 
 impl WorkerPool {
-    fn new(size: usize, server_id: usize, cpu_id: usize, executor: Arc<Executor>) -> Self {
-        log_with_timestamp(&format!("Creating WorkerPool with {} workers for CPU {} on server {}",
-                                    size, cpu_id, server_id));
-        let mut workers = VecDeque::with_capacity(size);
-        let mut handles = Vec::with_capacity(size);
-        let mut channels = HashMap::new();
-
-        for id in 0..size {
-            log_with_timestamp(&format!("Initializing worker {} for CPU {} on server {}",
-                                        id, cpu_id, server_id));
-            let (tx, rx) = channel();
-
-            let worker_thread = WorkerThread {
-                id,
-                tid: 0,
-                task_rx: rx,
-                handle: TaskHandle { executor: executor.clone() },
-                server_id,
-                cpu_id,
-            };
-
-            let (handle, tid) = worker_thread.start();
-            handles.push(handle);
-
-            let worker = Worker {
-                id,
-                tid,
-                handle: TaskHandle { executor: executor.clone() },
-            };
-
-            // Store channel permanently
-            channels.insert(tid, tx.clone());
-
-            log_with_timestamp(&format!("Adding worker {} to pool", id));
-            workers.push_back((worker, tx));
-        }
-
+    fn new(size: usize) -> Self {
+        info!("Creating WorkerPool with capacity for {} workers", size);
         Self {
-            available_workers: Arc::new(Mutex::new(workers)),
-            worker_handles: Arc::new(Mutex::new(handles)),
-            worker_channels: Arc::new(Mutex::new(channels)),
+            available_workers: Arc::new(Mutex::new(HashMap::with_capacity(size))),
+            worker_handles: Arc::new(Mutex::new(Vec::with_capacity(size))),
             total_workers: size,
         }
     }
 
+    fn add_worker(&self, worker: Worker, handle: JoinHandle<()>, tx: Sender<Task>) {
+        let mut workers = self.available_workers.lock().unwrap();
+        let mut handles = self.worker_handles.lock().unwrap();
+
+        workers.insert(worker.tid, (worker, tx));
+        handles.push(handle);
+    }
+
     fn get_worker(&self) -> Option<(Worker, Sender<Task>)> {
         let mut workers = self.available_workers.lock().unwrap();
-        let result = workers.pop_front();
-        if let Some((ref worker, _)) = result {
-            log_with_timestamp(&format!("WorkerPool: Retrieved worker {}", worker.id));
+        // Get and remove the first available worker
+        if let Some((&worker_tid, _)) = workers.iter().next() {
+            workers.remove(&worker_tid)
         } else {
-            log_with_timestamp("WorkerPool: No workers available");
+            None
         }
-        result
     }
 
     fn return_worker(&self, worker: Worker, tx: Sender<Task>) {
         debug!("WorkerPool: Returning worker {} to pool", worker.id);
-        self.available_workers.lock().unwrap().push_back((worker, tx));
-    }
-
-    fn get_task_sender(&self, tid: pid_t) -> Option<Sender<Task>> {
-        self.worker_channels.lock().unwrap().get(&tid).cloned()
+        self.available_workers.lock().unwrap().insert(worker.tid, (worker, tx));
     }
 }
 
@@ -482,27 +465,94 @@ struct Server {
 }
 
 impl Server {
-    fn new(id: usize, cpu_id: usize, executor: Arc<Executor>, worker_pool: Arc<WorkerPool>) -> Self {
+    fn new(id: usize, cpu_id: usize, executor: Arc<Executor>) -> Self {
         log_with_timestamp(&format!("Creating Server {}", id));
-        let mut worker_states = HashMap::new();
-
-        // Create a new scope for the workers lock
-        {
-            let workers = worker_pool.available_workers.lock().unwrap();
-            for (worker, _) in workers.iter() {
-                worker_states.insert(worker.tid, WorkerState::new(worker.tid, id));
-            }
-        } // Lock is dropped here
-
+        // Get worker_count from executor's config
+        let worker_count = executor.config.worker_count;
         Self {
             id,
             task_queue: Arc::new(Mutex::new(TaskQueue::new())),
-            worker_pool, // Now this move is valid
+            worker_pool: Arc::new(WorkerPool::new(worker_count)), // Use worker_count instead of config
             executor,
-            worker_states: Arc::new(Mutex::new(worker_states)),
+            worker_states: Arc::new(Mutex::new(HashMap::new())),
             completed_cycles: Arc::new(Mutex::new(HashMap::new())),
             done: Arc::new(AtomicBool::new(false)),
             cpu_id
+        }
+    }
+
+    fn initialize_workers(&self) -> Result<(), ServerError> {
+        info!("Server {}: Initializing workers", self.id);
+
+        for worker_id in 0..self.worker_pool.total_workers {
+            info!("Server {}: Initializing worker {}", self.id, worker_id);
+
+            // Create new worker thread
+            let (tx, rx) = channel();
+            let worker_thread = WorkerThread::new(
+                worker_id,
+                self.id,
+                self.cpu_id,
+                self.executor.clone(),
+                rx,
+            );
+
+            // Update state to initializing
+            self.transition_worker_state(0, WorkerStatus::Initializing, None);
+
+            // Start the worker thread
+            let (handle, tid) = worker_thread.start();
+
+            // Update state to registering
+            self.transition_worker_state(tid, WorkerStatus::Registering, None);
+
+            // Wait for initial wake event with timeout
+            let worker_event = self.wait_for_worker_registration(worker_id)?;
+
+            // Create worker instance and add to pool
+            let worker = Worker {
+                id: worker_id,
+                tid,
+                handle: TaskHandle { executor: self.executor.clone() },
+            };
+
+            self.worker_pool.add_worker(worker, handle, tx);
+            self.transition_worker_state(tid, WorkerStatus::Waiting, None);
+
+            info!("Server {}: Worker {} initialized successfully", self.id, worker_id);
+        }
+
+        info!("Server {}: All workers initialized", self.id);
+        Ok(())
+    }
+
+    fn wait_for_worker_registration(&self, worker_id: usize) -> Result<u64, ServerError> {
+        let start = SystemTime::now();
+        let timeout = Duration::from_millis(WORKER_REGISTRATION_TIMEOUT_MS);
+        let mut events = [0u64; EVENT_BUFFER_SIZE];
+
+        loop {
+            if start.elapsed().unwrap() > timeout {
+                return Err(ServerError::WorkerRegistrationTimeout { worker_id });
+            }
+
+            let ret = umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
+            if ret != 0 {
+                return Err(ServerError::WorkerRegistrationFailed {
+                    worker_id,
+                    error: ret
+                });
+            }
+
+            let event = events[0];
+            let event_type = event & UMCG_WORKER_EVENT_MASK;
+
+            if event_type == UmcgEventType::Wake as u64 {
+                return Ok(event);
+            } else {
+                debug!("Server {}: Unexpected event {} during worker {} registration",
+                    self.id, event_type, worker_id);
+            }
         }
     }
 
@@ -663,10 +713,10 @@ impl Server {
                         }
 
                         // Return worker to pool
-                        if let Some((worker, tx)) = self.worker_pool.available_workers.lock().unwrap()
+                        if let Some(((worker_tid, (worker, tx)))) = self.worker_pool.available_workers.lock().unwrap()
                             .iter()
-                            .find(|(w, _)| w.tid == worker_tid)
-                            .cloned()
+                            .find(|(&tid, _)| tid == worker_tid)
+                            .map(|(k, v)| (*k, v.clone()))
                         {
                             debug!("Server {}: Returning worker {} to pool", self.id, worker_tid);
                             self.worker_pool.return_worker(worker, tx);
@@ -718,40 +768,60 @@ impl Server {
         }
     }
 
+    fn run_event_loop(&self) -> Result<(), ServerError> {
+        while !self.done.load(Ordering::Relaxed) {
+            let mut events = [0u64; 6];
+            log_with_timestamp(&format!("Server {}: Waiting for events", self.id));
+            let ret = umcg_wait_retry(0, Some(&mut events), 6);
+
+            if ret != 0 {
+                log_with_timestamp(&format!("Server {} wait error: {}", self.id, ret));
+                return Err(ServerError::SystemError(std::io::Error::last_os_error()));
+            }
+
+            for &event in events.iter().take_while(|&&e| e != 0) {
+                log_with_timestamp(&format!("Server {}: Processing event: {}", self.id, event));
+                self.process_event(event);
+            }
+        }
+
+        // Cleanup
+        info!("Server {}: Beginning shutdown", self.id);
+        let unreg_result = sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0);
+        if unreg_result != 0 {
+            return Err(ServerError::RegistrationFailed(unreg_result));
+        }
+
+        info!("Server {}: Shutdown complete", self.id);
+        Ok(())
+    }
+
     fn start(self) -> JoinHandle<()> {
         thread::spawn(move || {
-            if let Err(e) = set_cpu_affinity(self.cpu_id) {
-                log_with_timestamp(&format!("Could not set CPU affinity for server {} to CPU {}: {}",
-                                            self.id, self.cpu_id, e));
+            if let Err(e) = self.run_server() {
+                error!("Server {} failed: {}", self.id, e);
             }
-
-            log_with_timestamp(&format!("Server {}: Starting up", self.id));
-
-            let reg_result = sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0);
-            assert_eq!(reg_result, 0, "Server {} UMCG registration failed", self.id);
-            log_with_timestamp(&format!("Server {}: UMCG registration complete", self.id));
-
-            while !self.done.load(Ordering::Relaxed) {
-                let mut events = [0u64; 6];
-                log_with_timestamp(&format!("Server {}: Waiting for events", self.id));
-                let ret = umcg_wait_retry(0, Some(&mut events), 6);
-
-                if ret != 0 {
-                    log_with_timestamp(&format!("Server {} wait error: {}", self.id, ret));
-                    break;
-                }
-
-                for &event in events.iter().take_while(|&&e| e != 0) {
-                    log_with_timestamp(&format!("Server {}: Processing event: {}", self.id, event));
-                    self.process_event(event);
-                }
-            }
-
-            log_with_timestamp(&format!("Server {}: Beginning shutdown", self.id));
-            let unreg_result = sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0);
-            assert_eq!(unreg_result, 0, "Server {} UMCG unregistration failed", self.id);
-            log_with_timestamp(&format!("Server {}: Shutdown complete", self.id));
         })
+    }
+
+    fn run_server(&self) -> Result<(), ServerError> {
+        if let Err(e) = set_cpu_affinity(self.cpu_id) {
+            return Err(ServerError::SystemError(e));
+        }
+
+        info!("Server {}: Starting up", self.id);
+
+        let reg_result = sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0);
+        if reg_result != 0 {
+            return Err(ServerError::RegistrationFailed(reg_result));
+        }
+        info!("Server {}: UMCG registration complete", self.id);
+
+        // Initialize workers one at a time
+        self.initialize_workers()?;
+
+        // Main event loop - existing code remains the same
+        self.run_event_loop()
     }
 }
 
@@ -777,17 +847,7 @@ impl Executor {
             for i in 0..config.server_count {
                 let cpu_id = config.start_cpu + i;
                 log_with_timestamp(&format!("Creating Server {} on CPU {}", i, cpu_id));
-
-                // Create worker pool with CPU affinity
-                let worker_pool = Arc::new(WorkerPool::new(
-                    config.worker_count,
-                    i,  // server_id
-                    cpu_id,  // cpu_id
-                    executor_clone.clone()
-                ));
-
-                // Create server with CPU affinity
-                servers.push(Server::new(i, cpu_id, executor_clone.clone(), worker_pool));
+                servers.push(Server::new(i, cpu_id, executor_clone.clone()));
             }
         }
 
