@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use crossbeam_queue::ArrayQueue;
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -219,8 +220,8 @@ impl TaskEntry {
 }
 
 struct TaskQueue {
-    pending: VecDeque<TaskEntry>,
-    preempted: VecDeque<TaskEntry>,
+    pending: ArrayQueue<TaskEntry>,
+    preempted: ArrayQueue<TaskEntry>,
     in_progress: HashMap<Uuid, TaskEntry>,
     mutex: Mutex<()>,
 }
@@ -229,8 +230,8 @@ impl TaskQueue {
     fn new() -> Self {
         info!("Creating new TaskQueue");
         Self {
-            pending: VecDeque::new(),
-            preempted: VecDeque::new(),
+            pending: ArrayQueue::new(1024),
+            preempted: ArrayQueue::new(1024),
             in_progress: HashMap::new(),
             mutex: Mutex::new(()),
         }
@@ -241,19 +242,21 @@ impl TaskQueue {
         info!("TaskQueue: Enqueueing task {}", task.id);
         match &task.state {
             TaskState::Pending(_) => {
-                debug!("TaskQueue: Task {} added to pending queue", task.id);
-                self.pending.push_back(task)
+                // No more blocking on mutex!
+                if let Err(_) = self.pending.push(task) {
+                    error!("Queue full - task dropped!");
+                }
             },
             TaskState::Running { preempted: true, .. } => {
-                debug!("TaskQueue: Task {} added to preempted queue", task.id);
-                self.preempted.push_back(task)
+                if let Err(_) = self.preempted.push(task) {
+                    error!("Preempted queue full!");
+                }
             },
             TaskState::Running { .. } => {
-                debug!("TaskQueue: Task {} added to in_progress map", task.id);
                 self.in_progress.insert(task.id, task);
             }
             TaskState::Completed => {
-                info!("Warning: Attempting to enqueue completed task {}", task.id);
+                info!("Attempting to enqueue completed task {}", task.id);
             }
         }
         debug!("TaskQueue stats - Pending: {}, Preempted: {}, In Progress: {}",
@@ -263,9 +266,8 @@ impl TaskQueue {
     fn get_next_task(&mut self) -> Option<TaskEntry> {
         let _guard = self.mutex.lock().unwrap();
         debug!("TaskQueue: Attempting to get next task");
-        let task = self.preempted
-            .pop_front()
-            .or_else(|| self.pending.pop_front());
+        let task = self.preempted.pop()
+            .or_else(|| self.pending.pop());
 
         if let Some(ref task) = task {
             debug!("TaskQueue: Retrieved task {}", task.id);
@@ -3564,6 +3566,8 @@ en1: assigned FE80::3426:E4FF:FE0C:9286
 ➜  /app git:(master)
  */
 
+
+// Simple tests ignore
 // pub fn test_worker_first() -> i32 {
 //     println!("Testing worker registration before server...");
 //

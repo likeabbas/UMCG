@@ -728,7 +728,7 @@ fn run_full_tests() {
     run_dynamic_task_demo();
 
     println!("Running run_multi_server_demo");
-    // run_multi_server_demo();
+    run_multi_server_demo();
     //
     // println!("Running UMCG test suite...");
     //
