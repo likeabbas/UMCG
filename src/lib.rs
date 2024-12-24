@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -316,16 +317,31 @@ struct Worker {
     id: usize,
     tid: pid_t,
     handle: TaskHandle,
+    tx: Sender<Task>,
+    status: WorkerStatus,
+    current_task: Option<Uuid>,
+    server_id: usize,  // Keeping this from original worker state
 }
 
 impl Worker {
+    fn new(id: usize, server_id: usize, tid: pid_t, handle: TaskHandle, tx: Sender<Task>) -> Self {
+        info!("Creating new Worker {} for server {}", id, server_id);
+        Self {
+            id,
+            tid,
+            handle,
+            tx,
+            status: WorkerStatus::Initializing,
+            current_task: None,
+            server_id,
+        }
+    }
+
     fn assign_task(&self, mut task: TaskEntry, tx: &Sender<Task>) -> Result<(), TaskEntry> {
         info!("Worker {}: Starting task assignment", self.id);
 
-        // Extract the task_fn, but only send it if the channel is available
         match &task.state {
             TaskState::Pending(_) => {
-                // Extract and send the actual task
                 if let TaskState::Pending(task_fn) = std::mem::replace(&mut task.state, TaskState::Completed) {
                     match tx.send(Task::Function(task_fn)) {
                         Ok(_) => {
@@ -334,7 +350,7 @@ impl Worker {
                         },
                         Err(_) => {
                             debug!("Worker {}: Channel is disconnected", self.id);
-                            Err(task)  // Return original task untouched
+                            Err(task)
                         }
                     }
                 } else {
@@ -375,8 +391,7 @@ impl WorkerThread {
 }
 
 struct WorkerPool {
-    available_workers: Arc<Mutex<HashMap<pid_t, (Worker, Sender<Task>)>>>,
-    worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    workers: Arc<Mutex<HashMap<pid_t, Worker>>>,
     total_workers: usize,
 }
 
@@ -384,33 +399,53 @@ impl WorkerPool {
     fn new(size: usize) -> Self {
         info!("Creating WorkerPool with capacity for {} workers", size);
         Self {
-            available_workers: Arc::new(Mutex::new(HashMap::with_capacity(size))),
-            worker_handles: Arc::new(Mutex::new(Vec::with_capacity(size))),
+            workers: Arc::new(Mutex::new(HashMap::with_capacity(size))),
             total_workers: size,
         }
     }
 
-    fn add_worker(&self, worker: Worker, handle: JoinHandle<()>, tx: Sender<Task>) {
-        let mut workers = self.available_workers.lock().unwrap();
-        let mut handles = self.worker_handles.lock().unwrap();
-
-        workers.insert(worker.tid, (worker, tx));
-        handles.push(handle);
+    fn add_worker(&self, worker: Worker) {
+        let mut workers = self.workers.lock().unwrap();
+        debug!("WorkerPool: Adding worker {} with tid {}", worker.id, worker.tid);
+        workers.insert(worker.tid, worker);
     }
 
-    fn get_worker(&self) -> Option<(Worker, Sender<Task>)> {
-        let mut workers = self.available_workers.lock().unwrap();
-        // Get and remove the first available worker
-        if let Some((&worker_tid, _)) = workers.iter().next() {
-            workers.remove(&worker_tid)
-        } else {
-            None
+    fn get_available_worker(&self) -> Option<(Worker, Sender<Task>)> {
+        let workers = self.workers.lock().unwrap();
+        let available = workers.iter()
+            .find(|(_, w)| w.status == WorkerStatus::Waiting)
+            .map(|(_, w)| {
+                let worker = w.clone();
+                let tx = w.tx.clone();
+                (worker, tx)
+            });
+        debug!("WorkerPool: Found available worker: {:?}",
+            available.as_ref().map(|(w, _)| w.id));
+        available
+    }
+
+    fn update_worker_status(&self, tid: pid_t, status: WorkerStatus, task: Option<Uuid>) {
+        if let Some(worker) = self.workers.lock().unwrap().get_mut(&tid) {
+            debug!("WorkerPool: Updating worker {} status from {:?} to {:?}",
+                worker.id, worker.status, status);
+            worker.status = status;
+            worker.current_task = task;
         }
     }
 
-    fn return_worker(&self, worker: Worker, tx: Sender<Task>) {
-        debug!("WorkerPool: Returning worker {} to pool", worker.id);
-        self.available_workers.lock().unwrap().insert(worker.tid, (worker, tx));
+    fn update_worker_status_keep_task(&self, tid: pid_t, status: WorkerStatus) {
+        if let Some(worker) = self.workers.lock().unwrap().get_mut(&tid) {
+            debug!("WorkerPool: Updating worker {} status from {:?} to {:?} (keeping task {:?})",
+                worker.id, worker.status, status, worker.current_task);
+            worker.status = status;
+            // Deliberately not touching current_task
+        }
+    }
+
+    fn get_worker_state(&self, tid: pid_t) -> Option<(WorkerStatus, Option<Uuid>)> {
+        self.workers.lock().unwrap()
+            .get(&tid)
+            .map(|w| (w.status.clone(), w.current_task))
     }
 }
 
@@ -460,27 +495,27 @@ impl WorkerThread {
             // );
             // assert_eq!(wait_result, 0, "Worker {} initial wait failed", self.id);
 
-            // Rest of worker thread logic remains the same
             debug!("Worker {}: Entering task processing loop", self.id);
             while let Ok(task) = self.task_rx.recv() {
-                debug!("Worker {}: Received task from channel", self.id);
+                debug!("!!!!!!!!!! WORKER {}: Received task from channel !!!!!!!!!!!", self.id);
                 match task {
                     Task::Function(task) => {
-                        info!("Worker {}: Starting task execution", self.id);
+                        info!("!!!!!!!!!! WORKER {}:  !!!!!!!!!!!", self.id);
                         task(&self.handle);
-                        info!("Worker {}: Completed task execution", self.id);
+                        info!("!!!!!!!!!! WORKER {}: COMPLETED task execution !!!!!!!!!!!", self.id);
 
-                        debug!("Worker {} [{}]: Signaling ready for more work", self.id, self.tid);
+                        debug!("!!!!!!!!!! WORKER {} [{}]: Signaling ready for more work !!!!!!!!!!!",
+                        self.id, self.tid);
                         let wait_result = sys_umcg_ctl(
-                            self.server_id as u64,  // Include server ID in wait call
+                            self.server_id as u64,
                             UmcgCmd::Wait,
                             0,
                             0,
                             None,
                             0
                         );
-                        debug!("Worker {} [{}]: Wait syscall returned {}",
-                            self.id, self.tid, wait_result);
+                        debug!("!!!!!!!!!! WORKER {} [{}]: Wait syscall returned {} !!!!!!!!!!!",
+                        self.id, self.tid, wait_result);
                         assert_eq!(wait_result, 0, "Worker {} UMCG wait failed", self.id);
                     }
                     Task::Shutdown => {
@@ -516,7 +551,6 @@ struct Server {
     task_queue: Arc<Mutex<TaskQueue>>,
     worker_pool: Arc<WorkerPool>,
     executor: Arc<Executor>,
-    worker_states: Arc<Mutex<HashMap<pid_t, WorkerState>>>,
     completed_cycles: Arc<Mutex<HashMap<Uuid, bool>>>,
     done: Arc<AtomicBool>,
     cpu_id: usize,
@@ -525,26 +559,24 @@ struct Server {
 impl Server {
     fn new(id: usize, cpu_id: usize, executor: Arc<Executor>) -> Self {
         log_with_timestamp(&format!("Creating Server {}", id));
-        // Get worker_count from executor's config
         let worker_count = executor.config.worker_count;
         Self {
             id,
             task_queue: Arc::new(Mutex::new(TaskQueue::new())),
-            worker_pool: Arc::new(WorkerPool::new(worker_count)), // Use worker_count instead of config
+            worker_pool: Arc::new(WorkerPool::new(worker_count)),
             executor,
-            worker_states: Arc::new(Mutex::new(HashMap::new())),
             completed_cycles: Arc::new(Mutex::new(HashMap::new())),
             done: Arc::new(AtomicBool::new(false)),
             cpu_id
         }
     }
+
     fn initialize_workers(&self) -> Result<(), ServerError> {
         info!("Server {}: Initializing workers", self.id);
 
         for worker_id in 0..self.worker_pool.total_workers {
             info!("Server {}: Initializing worker {}", self.id, worker_id);
 
-            // Create new worker thread
             let (tx, rx) = channel();
             let worker_thread = WorkerThread::new(
                 worker_id,
@@ -554,30 +586,26 @@ impl Server {
                 rx,
             );
 
-            // Update state to initializing
-            self.transition_worker_state(0, WorkerStatus::Initializing, None);
-
             // Start the worker thread
-            let (handle, tid) = worker_thread.start();
+            let (_handle, tid) = worker_thread.start();
 
-            // Update state to registering
-            self.transition_worker_state(tid, WorkerStatus::Registering, None);
+            // Create and add worker to pool
+            let worker = Worker::new(
+                worker_id,
+                self.id,
+                tid,
+                TaskHandle { executor: self.executor.clone() },
+                tx
+            );
 
+            self.worker_pool.add_worker(worker);
+            self.worker_pool.update_worker_status(tid, WorkerStatus::Registering, None);
 
-            // Wait for initial wake event with timeout
+            // Wait for initial wake event
             let worker_event = self.wait_for_worker_registration(worker_id)?;
             debug!("Worker {}: Registering worker event {:?}", self.id, worker_event);
 
-            // Create worker instance and add to pool
-            let worker = Worker {
-                id: worker_id,
-                tid,
-                handle: TaskHandle { executor: self.executor.clone() },
-            };
-
-            self.worker_pool.add_worker(worker, handle, tx);
-            self.transition_worker_state(tid, WorkerStatus::Waiting, None);
-
+            self.worker_pool.update_worker_status(tid, WorkerStatus::Waiting, None);
             info!("Server {}: Worker {} initialized successfully", self.id, worker_id);
         }
 
@@ -615,16 +643,15 @@ impl Server {
         }
     }
 
-    pub fn add_task(&self, task: Task) {  // Make this public
+    pub fn add_task(&self, task: Task) {
         log_with_timestamp(&format!("Server {}: Adding new task", self.id));
         match task {
             Task::Function(f) => {
                 let task_entry = TaskEntry::new(f);
                 let mut queue = self.task_queue.lock().unwrap();
                 queue.enqueue(task_entry);
-                log_with_timestamp(&format!("Server {}: Task queued, attempting to process", self.id));
-                drop(queue);
-                self.process_next_task();
+                log_with_timestamp(&format!("Server {}: Task queued", self.id));
+                // Remove the process_next_task call - let event loop handle it
             }
             Task::Shutdown => {
                 log_with_timestamp(&format!("Server {}: Received shutdown signal", self.id));
@@ -634,80 +661,9 @@ impl Server {
     }
 
     fn transition_worker_state(&self, worker_tid: pid_t, new_state: WorkerStatus, task_id: Option<Uuid>) {
-        let mut states = self.worker_states.lock().unwrap();
-        let old_state = states.get(&worker_tid).map(|s| s.status.clone());
-        states.entry(worker_tid)
-            .and_modify(|state| {
-                debug!("Server {}: Transitioning worker {} from {:?} to {:?}",
-                    self.id, worker_tid, old_state, new_state.clone());
-                state.status = new_state.clone();
-                state.current_task = task_id;
-            })
-            .or_insert_with(|| {
-                debug!("Server {}: Inserting worker state {:?}", self.id, new_state.clone());
-                let mut state = WorkerState::new(worker_tid, self.id);
-                state.status = new_state.clone();
-                state.current_task = task_id;
-                state
-            });
-        drop(states);
-    }
-
-    fn process_next_task(&self) -> bool {
-        debug!("Server {}: Attempting to process next task", self.id);
-        let mut task_queue = self.task_queue.lock().unwrap();
-
-        if let Some(task) = task_queue.get_next_task() {
-            debug!("Server {}: Got task, checking worker pool", self.id);
-            if let Some((worker, tx)) = self.worker_pool.get_worker() {
-                debug!("Server {}: Got worker {} from pool", self.id, worker.id);
-                info!("Server {}: Assigning task to worker {}", self.id, worker.id);
-
-                // Update state before assigning task
-                self.transition_worker_state(worker.tid, WorkerStatus::Running, Some(task.id));
-                task_queue.mark_in_progress(task.id, worker.tid);
-
-                let task = match worker.assign_task(task, &tx) {
-                    Ok(()) => {
-                        debug!("Server {}: Context switching to worker {}", self.id, worker.tid);
-                        let mut events = [0u64; 2];
-                        let switch_result = sys_umcg_ctl(
-                            0,
-                            UmcgCmd::CtxSwitch,
-                            worker.tid,
-                            0,
-                            Some(&mut events),
-                            2
-                        );
-                        debug!("Server {}: Context switch result: {}", self.id, switch_result);
-
-                        if switch_result != 0 {
-                            // Context switch failed - revert worker state and return to pool
-                            debug!("Server {}: Context switch failed for worker {}, reverting state",
-                            self.id, worker.tid);
-                            self.transition_worker_state(worker.tid, WorkerStatus::Waiting, None);
-                            self.worker_pool.return_worker(worker, tx);
-                            return false;
-                        } else {
-                            debug!("Server {}: Successfully switched to worker {}", self.id, worker.tid);
-                            return true;
-                        }
-                    }
-                    Err(task) => task
-                };
-
-                // If we get here, assignment failed
-                task_queue.enqueue(task);
-                false
-            } else {
-                debug!("Server {}: No workers available in pool", self.id);
-                task_queue.enqueue(task);
-                false
-            }
-        } else {
-            debug!("Server {}: No tasks in queue", self.id);
-            false
-        }
+        debug!("Server {}: Transitioning worker {} to {:?}",
+        self.id, worker_tid, new_state);
+        self.worker_pool.update_worker_status(worker_tid, new_state, task_id);
     }
 
     fn handle_umcg_event(&self, event: u64) -> Result<(), ServerError> {
@@ -715,12 +671,13 @@ impl Server {
         let worker_tid = (event >> UMCG_WORKER_ID_SHIFT) as i32;
 
         debug!("Server {}: Processing event {} for worker {}",
-            self.id, event_type, worker_tid);
+        self.id, event_type, worker_tid);
 
         match event_type {
             1 => { // BLOCK
                 debug!("Server {}: Worker {} blocked", self.id, worker_tid);
-                self.transition_worker_state(worker_tid, WorkerStatus::Blocked, None);
+                // Don't clear the task when blocking - keep current_task the same
+                self.worker_pool.update_worker_status_keep_task(worker_tid, WorkerStatus::Blocked);
             },
             2 => { // WAKE
                 /* IMPORTANT: Why we handle task completion in WAKE instead of WAIT
@@ -747,59 +704,159 @@ impl Server {
                  * - If worker was Running and we get a Wake: They completed a task
                  * - If worker was Blocked and we get a Wake: They can continue their task
                  * - If worker has no state: This is their initial registration wake
-                 *
-                 * This state-based approach allows us to handle the UMCG implementation's
-                 * behavior where Wait operations manifest as Wake events to the server.
                  */
-                let states = self.worker_states.lock().unwrap();
-                let current_status = states.get(&worker_tid).map(|s| s.status.clone());
-                let current_task = states.get(&worker_tid).and_then(|s| s.current_task);
-                drop(states);
+                debug!("!!!!!!!!!! WAKE EVENT START - CHECKING WORKER STATE !!!!!!!!!!");
+                if let Some((current_status, current_task)) = self.worker_pool.get_worker_state(worker_tid) {
+                    debug!("!!!!!!!!!! WAKE: Worker {} current status: {:?}, has task: {} !!!!!!!!!!",
+            worker_tid,
+            current_status,
+            current_task.is_some()
+        );
+                    match current_status {
+                        WorkerStatus::Running => {
+                            debug!("!!!!!!!!!! WAKE: This is a task completion WAKE (worker was Running) !!!!!!!!!!");
+                            debug!("Server {}: Worker {} completing task", self.id, worker_tid);
 
-                debug!("Server {}: Worker {} woke up with current status: {:?}",
-                    self.id, worker_tid, current_status);
+                            // Mark worker as ready for new tasks
+                            self.worker_pool.update_worker_status(worker_tid, WorkerStatus::Waiting, None);
 
-                match current_status {
-                    Some(WorkerStatus::Running) => {
-                        debug!("Server {}: Worker {} completing task", self.id, worker_tid);
-                        self.transition_worker_state(worker_tid, WorkerStatus::Waiting, None);
+                            if let Some(task_id) = current_task {
+                                debug!("!!!!!!!!!! WAKE: Removing completed task {} and checking for more !!!!!!!!!!", task_id);
+                                let mut task_queue = self.task_queue.lock().unwrap();
+                                task_queue.in_progress.remove(&task_id);
 
-                        if let Some(task_id) = current_task {
+                                // Immediately check for pending tasks
+                                if let Some(next_task) = task_queue.get_next_task() {
+                                    debug!("!!!!!!!!!! WAKE: Found pending task {} for worker {} !!!!!!!!!!",
+                            next_task.id, worker_tid);
+
+                                    // Update status before dropping task_queue lock
+                                    self.worker_pool.update_worker_status(
+                                        worker_tid,
+                                        WorkerStatus::Running,
+                                        Some(next_task.id)
+                                    );
+
+                                    task_queue.mark_in_progress(next_task.id, worker_tid);
+                                    drop(task_queue);
+
+                                    // Try to assign the task immediately
+                                    if let Some((worker, tx)) = self.worker_pool.workers.lock().unwrap()
+                                        .get(&worker_tid)
+                                        .map(|w| (w.clone(), w.tx.clone()))
+                                    {
+                                        debug!("!!!!!!!!!! WAKE: Attempting to assign task to worker {} !!!!!!!!!!",
+                                worker_tid);
+                                        match worker.assign_task(next_task, &tx) {
+                                            Ok(()) => {
+                                                debug!("!!!!!!!!!! WAKE: Task assigned, doing context switch !!!!!!!!!!");
+                                                if let Err(e) = self.context_switch_worker(worker_tid) {
+                                                    error!("!!!!!!!!!! WAKE: Context switch failed: {} !!!!!!!!!!", e);
+                                                    self.worker_pool.update_worker_status(
+                                                        worker_tid,
+                                                        WorkerStatus::Waiting,
+                                                        None
+                                                    );
+                                                }
+                                            }
+                                            Err(failed_task) => {
+                                                debug!("!!!!!!!!!! WAKE: Task assignment failed !!!!!!!!!!");
+                                                let mut task_queue = self.task_queue.lock().unwrap();
+                                                task_queue.enqueue(failed_task);
+                                                self.worker_pool.update_worker_status(
+                                                    worker_tid,
+                                                    WorkerStatus::Waiting,
+                                                    None
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    debug!("!!!!!!!!!! WAKE: No pending tasks found !!!!!!!!!!");
+                                }
+                            }
+                        },
+                        WorkerStatus::Blocked => {
+                            debug!("!!!!!!!!!! WAKE: This is a sleep/IO wakeup WAKE (worker was Blocked) !!!!!!!!!!");
+                            debug!("Server {}: Worker {} unblocking", self.id, worker_tid);
+                            // Keep the current task - worker is resuming after being blocked
+                            self.worker_pool.update_worker_status(
+                                worker_tid,
+                                WorkerStatus::Running,
+                                current_task
+                            );
+                        },
+                        WorkerStatus::Waiting => {
+                            debug!("!!!!!!!!!! WAKE: This is a Wait->Wake from klib (worker already Waiting) !!!!!!!!!!");
                             let mut task_queue = self.task_queue.lock().unwrap();
-                            task_queue.in_progress.remove(&task_id);
-                        }
+                            if let Some(task) = task_queue.get_next_task() {
+                                debug!("!!!!!!!!!! WAKE: Found task for waiting worker !!!!!!!!!!");
+                                self.worker_pool.update_worker_status(
+                                    worker_tid,
+                                    WorkerStatus::Running,
+                                    Some(task.id)
+                                );
+                                task_queue.mark_in_progress(task.id, worker_tid);
+                                drop(task_queue);
 
-                        // Return worker to pool
-                        if let Some((worker, tx)) = self.worker_pool.available_workers.lock().unwrap()
-                            .values()
-                            .find(|(w, _)| w.tid == worker_tid)
-                            .cloned()
-                        {
-                            self.worker_pool.return_worker(worker, tx);
+                                if let Some((worker, tx)) = self.worker_pool.workers.lock().unwrap()
+                                    .get(&worker_tid)
+                                    .map(|w| (w.clone(), w.tx.clone()))
+                                {
+                                    match worker.assign_task(task, &tx) {
+                                        Ok(()) => {
+                                            debug!("!!!!!!!!!! WAKE: Assigned task to waiting worker !!!!!!!!!!");
+                                            if let Err(e) = self.context_switch_worker(worker_tid) {
+                                                error!("!!!!!!!!!! WAKE: Context switch failed for waiting worker !!!!!!!!!!");
+                                                self.worker_pool.update_worker_status(
+                                                    worker_tid,
+                                                    WorkerStatus::Waiting,
+                                                    None
+                                                );
+                                            }
+                                        }
+                                        Err(failed_task) => {
+                                            debug!("!!!!!!!!!! WAKE: Task assignment failed for waiting worker !!!!!!!!!!");
+                                            let mut task_queue = self.task_queue.lock().unwrap();
+                                            task_queue.enqueue(failed_task);
+                                            self.worker_pool.update_worker_status(
+                                                worker_tid,
+                                                WorkerStatus::Waiting,
+                                                None
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
-                    },
-                    Some(WorkerStatus::Blocked) => {
-                        debug!("Server {}: Worker {} unblocking", self.id, worker_tid);
-                        self.transition_worker_state(worker_tid, WorkerStatus::Running, current_task);
-                    },
-                    _ => {
-                        debug!("Server {}: Worker {} in default state, setting to Waiting",
-                            self.id, worker_tid);
-                        self.transition_worker_state(worker_tid, WorkerStatus::Waiting, None);
+                        _ => {
+                            debug!("!!!!!!!!!! WAKE: This is likely an initial registration WAKE (worker status: {:?}) !!!!!!!!!!",
+                    current_status);
+                            debug!("Server {}: Worker {} in initial state", self.id, worker_tid);
+                            self.worker_pool.update_worker_status(
+                                worker_tid,
+                                WorkerStatus::Waiting,
+                                None
+                            );
+                        }
                     }
                 }
             },
             3 => { // WAIT
-                debug!("Server {}: Worker {} waiting", self.id, worker_tid);
-                self.transition_worker_state(worker_tid, WorkerStatus::Waiting, None);
+                debug!("!!!!!!!!!! EXPLICIT WAIT EVENT - THIS SHOULD BE RARE !!!!!!!!!!");
+                debug!("Server {}: Got explicit WAIT from worker {}", self.id, worker_tid);
+                if let Some((current_status, _)) = self.worker_pool.get_worker_state(worker_tid) {
+                    debug!("Server {}: Worker {} current status: {:?}", self.id, worker_tid, current_status);
+                    if current_status != WorkerStatus::Waiting {
+                        self.worker_pool.update_worker_status(worker_tid, WorkerStatus::Waiting, None);
+                    }
+                }
             },
             4 => { // EXIT
                 debug!("Server {}: Worker {} exited", self.id, worker_tid);
-                self.transition_worker_state(worker_tid, WorkerStatus::Completed, None);
+                self.worker_pool.update_worker_status(worker_tid, WorkerStatus::Completed, None);
             },
             _ => {
-                debug!("Server {}: Unknown event {} from worker {}",
-                    self.id, event_type, worker_tid);
                 return Err(ServerError::InvalidWorkerEvent {
                     worker_id: worker_tid as usize,
                     event
@@ -834,23 +891,38 @@ impl Server {
         self.initialize_workers()?;
 
         // Main UMCG event loop - now handles both events and task management
+        // Main UMCG event loop - now handles both events and task management
         while !self.done.load(Ordering::Relaxed) {
-            let mut events = [0u64; 6];
-            let ret = umcg_wait_retry(0, Some(&mut events), 6);
+            // Try to schedule any pending tasks first
+            debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS BEFORE WAITING !!!!!!!!!!");
+            self.try_schedule_tasks()?;
 
-            if ret != 0 {
+            let mut events = [0u64; 6];
+            debug!("!!!!!!!!!! SERVER EVENT LOOP - WAITING FOR EVENTS (with timeout) !!!!!!!!!!");
+            // Add a short timeout (e.g., 100ms) so we don't block forever
+            let ret = sys_umcg_ctl(
+                0,
+                UmcgCmd::Wait,
+                0,
+                100_000_000, // 100ms in nanoseconds
+                Some(&mut events),
+                6
+            );
+            debug!("!!!!!!!!!! SERVER EVENT WAIT RETURNED: {} !!!!!!!!!!", ret);
+
+            if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
                 error!("Server {} wait error: {}", self.id, ret);
                 return Err(ServerError::SystemError(std::io::Error::last_os_error()));
             }
 
             for &event in events.iter().take_while(|&&e| e != 0) {
+                debug!("!!!!!!!!!! SERVER PROCESSING EVENT: {} !!!!!!!!!!", event);
                 // Use our existing event handler
                 if let Err(e) = self.handle_umcg_event(event) {
                     error!("Server {} event handling error: {}", self.id, e);
                 }
 
-                // After each event, check if we can schedule tasks
-                // This lets us respond immediately when workers become available
+                // Try to schedule tasks after handling each event too
                 self.try_schedule_tasks()?;
             }
         }
@@ -861,43 +933,63 @@ impl Server {
     }
 
     fn try_schedule_tasks(&self) -> Result<(), ServerError> {
-        // Only attempt to schedule if we have available workers
-        if let Some((worker, tx)) = self.worker_pool.get_worker() {
+        debug!("Server {}: Attempting to schedule tasks...", self.id);
+        let mut workers = self.worker_pool.workers.lock().unwrap();
+        debug!("Server {}: Looking for waiting workers among {} workers",
+        self.id, workers.len());
+        if let Some((_, worker)) = workers.iter_mut().find(|(_, w)| w.status == WorkerStatus::Waiting) {
+            debug!("Server {}: Found waiting worker {} with status {:?}",
+            self.id, worker.id, worker.status);
+            let tx = worker.tx.clone();
+            let worker_tid = worker.tid;
+            let worker_clone = worker.clone();
+            drop(workers);
+
             let mut task_queue = self.task_queue.lock().unwrap();
             if let Some(task) = task_queue.get_next_task() {
-                info!("Server {}: Assigning task to worker {}", self.id, worker.id);
+                info!("Server {}: Assigning task to worker {}", self.id, worker_clone.id);
 
-                self.transition_worker_state(worker.tid, WorkerStatus::Running, Some(task.id));
-                task_queue.mark_in_progress(task.id, worker.tid);
+                self.worker_pool.update_worker_status(
+                    worker_tid,
+                    WorkerStatus::Running,
+                    Some(task.id)
+                );
+
+                task_queue.mark_in_progress(task.id, worker_tid);
                 drop(task_queue);
 
-                match worker.assign_task(task, &tx) {
+                match worker_clone.assign_task(task, &tx) {
                     Ok(()) => {
-                        match self.context_switch_worker(worker.tid) {
+                        match self.context_switch_worker(worker_tid) {
                             Ok(()) => {
                                 debug!("Server {}: Successfully switched to worker {}",
-                                self.id, worker.tid);
+                                self.id, worker_tid);
                             }
                             Err(e) => {
                                 debug!("Server {}: Context switch failed for worker {}: {}",
-                                self.id, worker.tid, e);
-                                self.transition_worker_state(worker.tid, WorkerStatus::Waiting, None);
-                                self.worker_pool.return_worker(worker, tx);
+                                self.id, worker_tid, e);
+                                self.worker_pool.update_worker_status(
+                                    worker_tid,
+                                    WorkerStatus::Waiting,
+                                    None
+                                );
                                 return Err(e);
                             }
                         }
                     }
                     Err(failed_task) => {
-                        // Assignment failed, requeue task
                         let mut task_queue = self.task_queue.lock().unwrap();
                         task_queue.enqueue(failed_task);
-                        self.worker_pool.return_worker(worker, tx);
+                        self.worker_pool.update_worker_status(
+                            worker_tid,
+                            WorkerStatus::Waiting,
+                            None
+                        );
                     }
                 }
-            } else {
-                // No tasks, return worker to pool
-                self.worker_pool.return_worker(worker, tx);
             }
+        } else {
+            debug!("Server {}: No waiting workers found", self.id);
         }
         Ok(())
     }
@@ -907,13 +999,12 @@ impl Server {
         self.done.store(true, Ordering::SeqCst);
 
         // Signal all workers to shutdown
-        {
-            let workers = self.worker_pool.available_workers.lock().unwrap();
-            for (worker_tid, (worker, tx)) in workers.iter() {
-                debug!("Server {}: Sending shutdown signal to worker {}", self.id, worker.id);
-                if let Err(e) = tx.send(Task::Shutdown) {
-                    error!("Server {}: Failed to send shutdown to worker {}: {}", self.id, worker.id, e);
-                }
+        let workers = self.worker_pool.workers.lock().unwrap();
+        for (worker_tid, worker) in workers.iter() {
+            debug!("Server {}: Sending shutdown signal to worker {}", self.id, worker.id);
+            if let Err(e) = worker.tx.send(Task::Shutdown) {
+                error!("Server {}: Failed to send shutdown to worker {}: {}",
+                self.id, worker.id, e);
             }
         }
 
@@ -990,7 +1081,6 @@ impl Executor {
         let task_id = Uuid::new_v4();
         self.task_stats.register_task(task_id);
 
-        // Wrap the task with completion tracking
         let stats = self.task_stats.clone();
         let wrapped_task = Box::new(move |handle: &TaskHandle| {
             f(handle);
@@ -1001,7 +1091,7 @@ impl Executor {
         let servers = self.servers.lock().unwrap();
 
         if let Some(server) = servers.get(server_idx) {
-            let worker_count = server.worker_pool.available_workers.lock().unwrap().len();
+            let worker_count = server.worker_pool.workers.lock().unwrap().len();
             info!("Executor: Adding task {} to server {} (has {} workers)",
                 task_id, server_idx, worker_count);
             server.add_task(Task::Function(wrapped_task));
@@ -1089,7 +1179,7 @@ fn sys_umcg_ctl(
 fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz: i32) -> i32 {
     let mut flags = 0;
     loop {
-        debug!("UMCG wait retry - worker: {}, flags: {}", worker_id, flags);
+        debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {} !!!!!!!!!!", worker_id, flags);
         let events = events_buf.as_deref_mut();
         let ret = sys_umcg_ctl(
             flags,
@@ -1099,6 +1189,7 @@ fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz:
             events,
             event_sz,
         );
+        debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
         if ret != -1 || unsafe { *libc::__errno_location() } != EINTR {
             return ret;
         }
@@ -1137,21 +1228,25 @@ pub fn run_dynamic_task_demo() -> i32 {
 
     for i in 0..6 {
         let task = move |handle: &TaskHandle| {
-            log_with_timestamp(&format!("Initial task {}: Starting task", i));
+            log_with_timestamp(&format!("!!!! Initial task {}: STARTING task !!!!", i));
+
+            log_with_timestamp(&format!("!!!! Initial task {}: ABOUT TO SLEEP !!!!", i));
             thread::sleep(Duration::from_secs(2));
-            log_with_timestamp(&format!("Initial task {}: Preparing to spawn child task", i));
+            log_with_timestamp(&format!("!!!! Initial task {}: WOKE UP FROM SLEEP !!!!", i));
+
+            log_with_timestamp(&format!("!!!! Initial task {}: PREPARING to spawn child task !!!!", i));
 
             let parent_id = i;
             handle.submit(move |_| {
-                log_with_timestamp(&format!("Child task of initial task {}: Starting work", parent_id));
+                log_with_timestamp(&format!("!!!! Child task of initial task {}: STARTING work !!!!", parent_id));
                 thread::sleep(Duration::from_secs(1));
-                log_with_timestamp(&format!("Child task of initial task {}: Completed", parent_id));
+                log_with_timestamp(&format!("!!!! Child task of initial task {}: COMPLETED !!!!", parent_id));
             });
 
-            log_with_timestamp(&format!("Initial task {}: Completed", i));
+            log_with_timestamp(&format!("!!!! Initial task {}: COMPLETED !!!!", i));
         };
 
-        log_with_timestamp(&format!("Submitting initial task {}", i));
+        log_with_timestamp(&format!("!!!! Submitting initial task {} !!!!", i));
         executor.submit(Box::new(task));
     }
 
@@ -1226,149 +1321,149 @@ pub fn run_multi_server_demo() -> i32 {
     0
 }
 
-pub fn test_worker_first() -> i32 {
-    println!("Testing worker registration before server...");
-
-    // Start worker thread
-    let worker_handle = thread::spawn(|| {
-        let tid = get_thread_id();
-        println!("Worker: registering with tid {}", tid);
-
-        // Register worker
-        assert_eq!(
-            sys_umcg_ctl(
-                0,
-                UmcgCmd::RegisterWorker,
-                0,
-                (tid as u64) << UMCG_WORKER_ID_SHIFT,
-                None,
-                0
-            ),
-            0
-        );
-        println!("Worker: registered, starting sleep");
-        thread::sleep(Duration::from_secs(2));
-        println!("Worker: sleep complete");
-    });
-
-    // Give worker time to register
-    thread::sleep(Duration::from_millis(100));
-
-    // Start server
-    println!("Starting server...");
-    assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
-
-    // Server event loop
-    for _ in 0..10 {
-        println!("Server: waiting for events...");
-        let mut events = [0u64; 6];
-        let ret = umcg_wait_retry(0, Some(&mut events), 6);
-        assert_eq!(ret, 0);
-
-        // Process each event
-        for &event in events.iter().take_while(|&&e| e != 0) {
-            let event_type = event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
-            let worker_tid = event >> UMCG_WORKER_ID_SHIFT;
-            println!("Server: got event type {} from worker {}", event_type, worker_tid);
-
-            // If we got a WAKE event, try context switching to the worker
-            if event_type == 2 { // WAKE
-                println!("Server: context switching to worker {}", worker_tid);
-                let mut switch_events = [0u64; 6];
-                let ret = sys_umcg_ctl(
-                    0,
-                    UmcgCmd::CtxSwitch,
-                    worker_tid as i32,
-                    0,
-                    Some(&mut switch_events),
-                    6
-                );
-                assert_eq!(ret, 0);
-                println!("Server: context switch returned");
-
-                // Process any events from the context switch
-                for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
-                    let switch_event_type = switch_event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
-                    let switch_worker_tid = switch_event >> UMCG_WORKER_ID_SHIFT;
-                    println!("Server: after switch got event type {} from worker {}",
-                             switch_event_type, switch_worker_tid);
-                }
-            }
-        }
-    }
-
-    worker_handle.join().unwrap();
-    0
-}
-
-pub fn test_server_first() -> i32 {
-    println!("Testing server registration before worker...");
-
-    // Start server first
-    println!("Starting server...");
-    assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
-
-    // Start worker thread
-    let worker_handle = thread::spawn(|| {
-        let tid = get_thread_id();
-        println!("Worker: registering with tid {}", tid);
-
-        // Register worker
-        assert_eq!(
-            sys_umcg_ctl(
-                0,
-                UmcgCmd::RegisterWorker,
-                0,
-                (tid as u64) << UMCG_WORKER_ID_SHIFT,
-                None,
-                0
-            ),
-            0
-        );
-        println!("Worker: registered, starting sleep");
-        thread::sleep(Duration::from_secs(2));
-        println!("Worker: sleep complete");
-    });
-
-    // Server event loop
-    for _ in 0..10 {
-        println!("Server: waiting for events...");
-        let mut events = [0u64; 6];
-        let ret = umcg_wait_retry(0, Some(&mut events), 6);
-        assert_eq!(ret, 0);
-
-        // Process each event
-        for &event in events.iter().take_while(|&&e| e != 0) {
-            let event_type = event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
-            let worker_tid = event >> UMCG_WORKER_ID_SHIFT;
-            println!("Server: got event type {} from worker {}", event_type, worker_tid);
-
-            // If we got a WAKE event, try context switching to the worker
-            if event_type == 2 { // WAKE
-                println!("Server: context switching to worker {}", worker_tid);
-                let mut switch_events = [0u64; 6];
-                let ret = sys_umcg_ctl(
-                    0,
-                    UmcgCmd::CtxSwitch,
-                    worker_tid as i32,
-                    0,
-                    Some(&mut switch_events),
-                    6
-                );
-                assert_eq!(ret, 0);
-                println!("Server: context switch returned");
-
-                // Process any events from the context switch
-                for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
-                    let switch_event_type = switch_event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
-                    let switch_worker_tid = switch_event >> UMCG_WORKER_ID_SHIFT;
-                    println!("Server: after switch got event type {} from worker {}",
-                             switch_event_type, switch_worker_tid);
-                }
-            }
-        }
-    }
-
-    worker_handle.join().unwrap();
-    0
-}
+// pub fn test_worker_first() -> i32 {
+//     println!("Testing worker registration before server...");
+//
+//     // Start worker thread
+//     let worker_handle = thread::spawn(|| {
+//         let tid = get_thread_id();
+//         println!("Worker: registering with tid {}", tid);
+//
+//         // Register worker
+//         assert_eq!(
+//             sys_umcg_ctl(
+//                 0,
+//                 UmcgCmd::RegisterWorker,
+//                 0,
+//                 (tid as u64) << UMCG_WORKER_ID_SHIFT,
+//                 None,
+//                 0
+//             ),
+//             0
+//         );
+//         println!("Worker: registered, starting sleep");
+//         thread::sleep(Duration::from_secs(2));
+//         println!("Worker: sleep complete");
+//     });
+//
+//     // Give worker time to register
+//     thread::sleep(Duration::from_millis(100));
+//
+//     // Start server
+//     println!("Starting server...");
+//     assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
+//
+//     // Server event loop
+//     for _ in 0..10 {
+//         println!("Server: waiting for events...");
+//         let mut events = [0u64; 6];
+//         let ret = umcg_wait_retry(0, Some(&mut events), 6);
+//         assert_eq!(ret, 0);
+//
+//         // Process each event
+//         for &event in events.iter().take_while(|&&e| e != 0) {
+//             let event_type = event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
+//             let worker_tid = event >> UMCG_WORKER_ID_SHIFT;
+//             println!("Server: got event type {} from worker {}", event_type, worker_tid);
+//
+//             // If we got a WAKE event, try context switching to the worker
+//             if event_type == 2 { // WAKE
+//                 println!("Server: context switching to worker {}", worker_tid);
+//                 let mut switch_events = [0u64; 6];
+//                 let ret = sys_umcg_ctl(
+//                     0,
+//                     UmcgCmd::CtxSwitch,
+//                     worker_tid as i32,
+//                     0,
+//                     Some(&mut switch_events),
+//                     6
+//                 );
+//                 assert_eq!(ret, 0);
+//                 println!("Server: context switch returned");
+//
+//                 // Process any events from the context switch
+//                 for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
+//                     let switch_event_type = switch_event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
+//                     let switch_worker_tid = switch_event >> UMCG_WORKER_ID_SHIFT;
+//                     println!("Server: after switch got event type {} from worker {}",
+//                              switch_event_type, switch_worker_tid);
+//                 }
+//             }
+//         }
+//     }
+//
+//     worker_handle.join().unwrap();
+//     0
+// }
+//
+// pub fn test_server_first() -> i32 {
+//     println!("Testing server registration before worker...");
+//
+//     // Start server first
+//     println!("Starting server...");
+//     assert_eq!(sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0), 0);
+//
+//     // Start worker thread
+//     let worker_handle = thread::spawn(|| {
+//         let tid = get_thread_id();
+//         println!("Worker: registering with tid {}", tid);
+//
+//         // Register worker
+//         assert_eq!(
+//             sys_umcg_ctl(
+//                 0,
+//                 UmcgCmd::RegisterWorker,
+//                 0,
+//                 (tid as u64) << UMCG_WORKER_ID_SHIFT,
+//                 None,
+//                 0
+//             ),
+//             0
+//         );
+//         println!("Worker: registered, starting sleep");
+//         thread::sleep(Duration::from_secs(2));
+//         println!("Worker: sleep complete");
+//     });
+//
+//     // Server event loop
+//     for _ in 0..10 {
+//         println!("Server: waiting for events...");
+//         let mut events = [0u64; 6];
+//         let ret = umcg_wait_retry(0, Some(&mut events), 6);
+//         assert_eq!(ret, 0);
+//
+//         // Process each event
+//         for &event in events.iter().take_while(|&&e| e != 0) {
+//             let event_type = event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
+//             let worker_tid = event >> UMCG_WORKER_ID_SHIFT;
+//             println!("Server: got event type {} from worker {}", event_type, worker_tid);
+//
+//             // If we got a WAKE event, try context switching to the worker
+//             if event_type == 2 { // WAKE
+//                 println!("Server: context switching to worker {}", worker_tid);
+//                 let mut switch_events = [0u64; 6];
+//                 let ret = sys_umcg_ctl(
+//                     0,
+//                     UmcgCmd::CtxSwitch,
+//                     worker_tid as i32,
+//                     0,
+//                     Some(&mut switch_events),
+//                     6
+//                 );
+//                 assert_eq!(ret, 0);
+//                 println!("Server: context switch returned");
+//
+//                 // Process any events from the context switch
+//                 for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
+//                     let switch_event_type = switch_event & ((1 << UMCG_WORKER_ID_SHIFT) - 1);
+//                     let switch_worker_tid = switch_event >> UMCG_WORKER_ID_SHIFT;
+//                     println!("Server: after switch got event type {} from worker {}",
+//                              switch_event_type, switch_worker_tid);
+//                 }
+//             }
+//         }
+//     }
+//
+//     worker_handle.join().unwrap();
+//     0
+// }

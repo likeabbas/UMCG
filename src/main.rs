@@ -1,3 +1,4 @@
+#[allow(warnings)]
 use libc::{self, c_int, pid_t, syscall, SYS_gettid, CLOCK_REALTIME, timespec, EINTR, EINVAL, ETIMEDOUT, ESRCH, EFAULT, EAGAIN};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
@@ -5,7 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::ptr;
 use std::io::Write;
-use UMCG::{run_dynamic_task_demo, run_multi_server_demo, test_server_first, test_worker_first};
+use UMCG::{run_dynamic_task_demo, run_multi_server_demo};
 // Add this line for flush()
 
 const SYS_UMCG_CTL: i64 = 450;
@@ -721,6 +722,7 @@ fn run_full_tests() {
     // run_http_server();
     // test_worker_first();
     // test_server_first();
+    println!("what the fuck");
 
     println!("Running run_dynamic_task_demo");
     run_dynamic_task_demo();
