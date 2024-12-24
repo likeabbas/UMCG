@@ -500,7 +500,7 @@ impl WorkerThread {
                 debug!("!!!!!!!!!! WORKER {}: Received task from channel !!!!!!!!!!!", self.id);
                 match task {
                     Task::Function(task) => {
-                        info!("!!!!!!!!!! WORKER {}:  !!!!!!!!!!!", self.id);
+                        info!("!!!!!!!!!! WORKER {}: Starting task execution !!!!!!!!!!!", self.id);
                         task(&self.handle);
                         info!("!!!!!!!!!! WORKER {}: COMPLETED task execution !!!!!!!!!!!", self.id);
 
@@ -707,11 +707,7 @@ impl Server {
                  */
                 debug!("!!!!!!!!!! WAKE EVENT START - CHECKING WORKER STATE !!!!!!!!!!");
                 if let Some((current_status, current_task)) = self.worker_pool.get_worker_state(worker_tid) {
-                    debug!("!!!!!!!!!! WAKE: Worker {} current status: {:?}, has task: {} !!!!!!!!!!",
-            worker_tid,
-            current_status,
-            current_task.is_some()
-        );
+                    debug!("!!!!!!!!!! WAKE: Worker {} current status: {:?}, has task: {} !!!!!!!!!!", worker_tid, current_status, current_task.is_some());
                     match current_status {
                         WorkerStatus::Running => {
                             debug!("!!!!!!!!!! WAKE: This is a task completion WAKE (worker was Running) !!!!!!!!!!");
@@ -785,6 +781,12 @@ impl Server {
                                 WorkerStatus::Running,
                                 current_task
                             );
+
+                            debug!("Server {}: switching back to worker after sleep/io WAKE. Worker {} ", self.id, worker_tid);
+                            // Context switch back to the worker to let it continue its task
+                            if let Err(e) = self.context_switch_worker(worker_tid) {
+                                error!("Failed to context switch back to unblocked worker {}: {}", worker_tid, e);
+                            }
                         },
                         WorkerStatus::Waiting => {
                             debug!("!!!!!!!!!! WAKE: This is a Wait->Wake from klib (worker already Waiting) !!!!!!!!!!");
@@ -840,6 +842,8 @@ impl Server {
                             );
                         }
                     }
+                } else {
+                    debug!("!!! NO FUCKING WORKER STATE FOR WORKER {}!!", worker_tid);
                 }
             },
             3 => { // WAIT
