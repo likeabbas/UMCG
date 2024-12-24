@@ -468,7 +468,10 @@ impl WorkerThread {
 
             tid_tx.send(self.tid).expect("Failed to send worker tid");
 
-            let worker_id = (self.tid as u64) << UMCG_WORKER_ID_SHIFT;
+            // let worker_id = (self.tid as u64) << UMCG_WORKER_ID_SHIFT;
+
+            // register workers with just the one server
+            let worker_id = (((self.server_id as u64) << 32) | (self.tid as u64)) << UMCG_WORKER_ID_SHIFT;
             debug!("Worker {}: Registering with UMCG (worker_id: {}) for server {}",
                 self.id, worker_id, self.server_id);
 
