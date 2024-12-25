@@ -11,7 +11,8 @@
     "ShowErrors": true,
     "ShowWarnings": true,
     "Verbose": true,
-    "Memory": "2G"
+    "Memory": "2G",
+    "CPUs": 4
   },
   "ManifestPassthrough": {
     "consoles": ["+serial", "+net"],

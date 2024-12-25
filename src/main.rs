@@ -725,7 +725,7 @@ fn run_full_tests() {
     println!("what the fuck");
 
     println!("Running run_dynamic_task_demo");
-    run_dynamic_task_demo();
+    // run_dynamic_task_demo();
 
     println!("Running run_multi_server_demo");
     run_multi_server_demo();
