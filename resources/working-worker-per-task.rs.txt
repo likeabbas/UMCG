@@ -1,7 +1,7 @@
 /*
 This code is our initial working UMCG attempt. it makes a single worker per task.
 It shows that workers blocked and context switch to others so they can make progress.
-Here is the output from running our demo of the code below
+Here is the output from running our demo of the code below for reference
 ```Running scheduler
 [911.475] Starting UMCG demo with 3 workers...
 [911.529] Worker 0 (tid: 3) starting
