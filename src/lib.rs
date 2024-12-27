@@ -6,7 +6,7 @@ a thread pool, and multiple servers with their own workers.
 #![allow(warnings)]
 use crossbeam_queue::ArrayQueue;
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -509,17 +509,47 @@ impl WorkerThread {
             // );
             // assert_eq!(wait_result, 0, "Worker {} initial wait failed", self.id);
 
+            // debug!("Worker {}: Entering task processing loop", self.id);
+            // while let Ok(task) = self.task_rx.recv() {
+            //     debug!("!!!!!!!!!! WORKER {}: Received task from channel !!!!!!!!!!!", self.id);
+            //     match task {
+            //         Task::Function(task) => {
+            //             info!("!!!!!!!!!! WORKER {}: Starting task execution !!!!!!!!!!!", self.id);
+            //             task(&self.handle);
+            //             info!("!!!!!!!!!! WORKER {}: COMPLETED task execution !!!!!!!!!!!", self.id);
+            //
+            //             debug!("!!!!!!!!!! WORKER {} [{}]: Signaling ready for more work !!!!!!!!!!!",
+            //             self.id, self.tid);
+            //             let wait_result = sys_umcg_ctl(
+            //                 self.server_id as u64,
+            //                 UmcgCmd::Wait,
+            //                 0,
+            //                 0,
+            //                 None,
+            //                 0
+            //             );
+            //             debug!("!!!!!!!!!! WORKER {} [{}]: Wait syscall returned {} !!!!!!!!!!!",
+            //             self.id, self.tid, wait_result);
+            //             assert_eq!(wait_result, 0, "Worker {} UMCG wait failed", self.id);
+            //         }
+            //         Task::Shutdown => {
+            //             info!("Worker {}: Shutting down", self.id);
+            //             break;
+            //         }
+            //     }
+            // }
             debug!("Worker {}: Entering task processing loop", self.id);
-            while let Ok(task) = self.task_rx.recv() {
-                debug!("!!!!!!!!!! WORKER {}: Received task from channel !!!!!!!!!!!", self.id);
-                match task {
-                    Task::Function(task) => {
+            loop {
+                match self.task_rx.try_recv() {
+                    Ok(Task::Function(task)) => {
                         info!("!!!!!!!!!! WORKER {}: Starting task execution !!!!!!!!!!!", self.id);
                         task(&self.handle);
                         info!("!!!!!!!!!! WORKER {}: COMPLETED task execution !!!!!!!!!!!", self.id);
 
                         debug!("!!!!!!!!!! WORKER {} [{}]: Signaling ready for more work !!!!!!!!!!!",
-                        self.id, self.tid);
+                self.id, self.tid);
+
+                        // After completing a task, wait for more work
                         let wait_result = sys_umcg_ctl(
                             self.server_id as u64,
                             UmcgCmd::Wait,
@@ -529,11 +559,29 @@ impl WorkerThread {
                             0
                         );
                         debug!("!!!!!!!!!! WORKER {} [{}]: Wait syscall returned {} !!!!!!!!!!!",
-                        self.id, self.tid, wait_result);
+                self.id, self.tid, wait_result);
                         assert_eq!(wait_result, 0, "Worker {} UMCG wait failed", self.id);
                     }
-                    Task::Shutdown => {
+                    Ok(Task::Shutdown) => {
                         info!("Worker {}: Shutting down", self.id);
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // No tasks available, go into wait state
+                        let wait_result = sys_umcg_ctl(
+                            self.server_id as u64,
+                            UmcgCmd::Wait,
+                            0,
+                            0,
+                            None,
+                            0
+                        );
+                        debug!("!!!!!!!!!! WORKER {} [{}]: Wait returned {} (no tasks) !!!!!!!!!!!",
+                self.id, self.tid, wait_result);
+                        assert_eq!(wait_result, 0, "Worker {} UMCG wait failed", self.id);
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        info!("Worker {}: Channel disconnected, shutting down", self.id);
                         break;
                     }
                 }
