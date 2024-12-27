@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 use std::collections::{VecDeque, HashMap, HashSet};
-use dashmap::DashMap;
 use uuid::Uuid;
 use log::error;
 
@@ -189,7 +188,7 @@ impl WorkerState {
 }
 
 enum TaskState {
-    Pending(Box<dyn FnOnce(&TaskHandle) + Send + Sync + 'static>),
+    Pending(Box<dyn FnOnce(&TaskHandle) + Send>),
     Running {
         worker_tid: i32,
         start_time: SystemTime,
@@ -201,7 +200,7 @@ enum TaskState {
 }
 
 enum Task {
-    Function(Box<dyn FnOnce(&TaskHandle) + Send + Sync + 'static>),
+    Function(Box<dyn FnOnce(&TaskHandle) + Send>),
     Shutdown,
 }
 
@@ -213,7 +212,7 @@ struct TaskEntry {
 }
 
 impl TaskEntry {
-    fn new(task: Box<dyn FnOnce(&TaskHandle) + Send + Sync + 'static>) -> Self {
+    fn new(task: Box<dyn FnOnce(&TaskHandle) + Send>) -> Self {
         let id = Uuid::new_v4();
         info!("Creating new TaskEntry with ID: {}", id);
         Self {
@@ -234,7 +233,8 @@ impl TaskEntry {
 struct TaskQueue {
     pending: ArrayQueue<TaskEntry>,
     preempted: ArrayQueue<TaskEntry>,
-    in_progress: DashMap<Uuid, TaskEntry>,
+    in_progress: HashMap<Uuid, TaskEntry>,
+    mutex: Mutex<()>,
 }
 
 impl TaskQueue {
@@ -243,20 +243,22 @@ impl TaskQueue {
         Self {
             pending: ArrayQueue::new(1024),
             preempted: ArrayQueue::new(1024),
-            in_progress: DashMap::new(),
+            in_progress: HashMap::new(),
+            mutex: Mutex::new(()),
         }
     }
 
-    fn enqueue(&self, task: TaskEntry) {
+    fn enqueue(&mut self, task: TaskEntry) {
         info!("TaskQueue: Enqueueing task {}", task.id);
         match &task.state {
             TaskState::Pending(_) => {
-                if self.pending.push(task).is_err() {
+                // No more blocking on mutex!
+                if let Err(_) = self.pending.push(task) {
                     error!("Queue full - task dropped!");
                 }
             },
             TaskState::Running { preempted: true, .. } => {
-                if self.preempted.push(task).is_err() {
+                if let Err(_) = self.preempted.push(task) {
                     error!("Preempted queue full!");
                 }
             },
@@ -271,9 +273,10 @@ impl TaskQueue {
                self.pending.len(), self.preempted.len(), self.in_progress.len());
     }
 
-    fn get_next_task(&self) -> Option<TaskEntry> {
+    fn get_next_task(&mut self) -> Option<TaskEntry> {
         debug!("TaskQueue: Attempting to get next task");
-        let task = self.preempted.pop().or_else(|| self.pending.pop());
+        let task = self.preempted.pop()
+            .or_else(|| self.pending.pop());
 
         if let Some(ref task) = task {
             debug!("TaskQueue: Retrieved task {}", task.id);
@@ -284,8 +287,10 @@ impl TaskQueue {
         task
     }
 
-    fn mark_in_progress(&self, task_id: Uuid, worker_tid: pid_t) {
-        if let Some(mut task) = self.in_progress.get_mut(&task_id) {
+    fn mark_in_progress(&mut self, task_id: Uuid, worker_tid: i32) {
+        let _guard = self.mutex.lock().unwrap();
+        debug!("TaskQueue: Marking task {} as in progress with worker {}", task_id, worker_tid);
+        if let Some(task) = self.in_progress.get_mut(&task_id) {
             if let TaskState::Pending(_) = task.state {
                 task.state = TaskState::Running {
                     worker_tid,
@@ -294,12 +299,9 @@ impl TaskQueue {
                     blocked: false,
                     state: WorkerStatus::Running,
                 };
+                debug!("TaskQueue: Task {} state updated to Running", task_id);
             }
         }
-    }
-
-    fn mark_completed(&self, task_id: Uuid) -> Option<TaskEntry> {
-        self.in_progress.remove(&task_id).map(|(_, task)| task)
     }
 }
 
@@ -311,7 +313,7 @@ struct TaskHandle {
 impl TaskHandle {
     fn submit<F>(&self, f: F)
     where
-        F: FnOnce(&TaskHandle) + Send + Sync + 'static,  // Added Sync
+        F: FnOnce(&TaskHandle) + Send + 'static,
     {
         info!("TaskHandle: Submitting new task");
         let task = Box::new(f);
@@ -560,7 +562,7 @@ impl WorkerThread {
 #[derive(Clone)]
 struct Server {
     id: usize,
-    task_queue: Arc<TaskQueue>,  // Remove Mutex
+    task_queue: Arc<Mutex<TaskQueue>>,
     worker_pool: Arc<WorkerPool>,
     executor: Arc<Executor>,
     completed_cycles: Arc<Mutex<HashMap<Uuid, bool>>>,
@@ -574,7 +576,7 @@ impl Server {
         let worker_count = executor.config.worker_count;
         Self {
             id,
-            task_queue: Arc::new(TaskQueue::new()),  // No Mutex wrapper
+            task_queue: Arc::new(Mutex::new(TaskQueue::new())),
             worker_pool: Arc::new(WorkerPool::new(worker_count)),
             executor,
             completed_cycles: Arc::new(Mutex::new(HashMap::new())),
@@ -662,8 +664,10 @@ impl Server {
         match task {
             Task::Function(f) => {
                 let task_entry = TaskEntry::new(f);
-                self.task_queue.enqueue(task_entry);  // Direct call, no lock needed
+                let mut queue = self.task_queue.lock().unwrap();
+                queue.enqueue(task_entry);
                 log_with_timestamp(&format!("Server {}: Task queued", self.id));
+                // Remove the process_next_task call - let event loop handle it
             }
             Task::Shutdown => {
                 log_with_timestamp(&format!("Server {}: Received shutdown signal", self.id));
@@ -704,142 +708,164 @@ impl Server {
                  *    - The worker's status is set to UMCG_WORKER_WAITING
                  *    - The worker is added to a blockq
                  *    - The server is woken up via blockq_wake_one
+                 *
+                 * 2. This blockq wakeup mechanism results in a WAKE event being sent,
+                 *    even though the worker's intention was to WAIT for more work.
+                 *
+                 * 3. Therefore, we need to differentiate between two types of WAKE events:
+                 *    a) Wake after blocking (e.g., I/O, sleep) - worker needs to continue its current task
+                 *    b) Wake after task completion - worker is ready for a new task
+                 *
+                 * We differentiate these cases by checking the worker's current state:
+                 * - If worker was Running and we get a Wake: They completed a task
+                 * - If worker was Blocked and we get a Wake: They can continue their task
+                 * - If worker has no state: This is their initial registration wake
                  */
                 debug!("!!!!!!!!!! WAKE EVENT START - CHECKING WORKER STATE !!!!!!!!!!");
+                if let Some((current_status, current_task)) = self.worker_pool.get_worker_state(worker_tid) {
+                    debug!("!!!!!!!!!! WAKE: Worker {} current status: {:?}, has task: {} !!!!!!!!!!", worker_tid, current_status, current_task.is_some());
+                    match current_status {
+                        WorkerStatus::Running => {
+                            debug!("!!!!!!!!!! WAKE: This is a task completion WAKE (worker was Running) !!!!!!!!!!");
+                            debug!("Server {}: Worker {} completing task", self.id, worker_tid);
 
-                // First get current state under worker pool lock
-                // First get current state under worker pool lock
-                let (current_status, current_task) = {
-                    let workers = self.worker_pool.workers.lock().unwrap();
-                    workers.get(&worker_tid)
-                        .map(|w| (w.status.clone(), w.current_task))
-                        .expect("Worker must exist for UMCG event") // This should never fail
-                };
+                            // Mark worker as ready for new tasks
+                            self.worker_pool.update_worker_status(worker_tid, WorkerStatus::Waiting, None);
 
-                debug!("!!!!!!!!!! WAKE: Worker {} current status: {:?}, has task: {} !!!!!!!!!!",
-                worker_tid, current_status, current_task.is_some());
+                            if let Some(task_id) = current_task {
+                                debug!("!!!!!!!!!! WAKE: Removing completed task {} and checking for more !!!!!!!!!!", task_id);
+                                let mut task_queue = self.task_queue.lock().unwrap();
+                                task_queue.in_progress.remove(&task_id);
 
-                match current_status {
-                    WorkerStatus::Running => {
-                        debug!("!!!!!!!!!! WAKE: This is a task completion WAKE (worker was Running) !!!!!!!!!!");
+                                // Immediately check for pending tasks
+                                if let Some(next_task) = task_queue.get_next_task() {
+                                    debug!("!!!!!!!!!! WAKE: Found pending task {} for worker {} !!!!!!!!!!",next_task.id, worker_tid);
 
-                        // Complete task and get next task atomically
-                        let next_task = if let Some(task_id) = current_task {
-                            // First complete current task
-                            let completed = self.task_queue.mark_completed(task_id);
-                            if completed.is_some() {
-                                debug!("Server {}: Worker {} completing task {}",
-                                self.id, worker_tid, task_id);
+                                    // Update status before dropping task_queue lock
+                                    self.worker_pool.update_worker_status(
+                                        worker_tid,
+                                        WorkerStatus::Running,
+                                        Some(next_task.id)
+                                    );
+
+                                    task_queue.mark_in_progress(next_task.id, worker_tid);
+                                    drop(task_queue);
+
+                                    // Try to assign the task immediately
+                                    if let Some((worker, tx)) = self.worker_pool.workers.lock().unwrap()
+                                        .get(&worker_tid)
+                                        .map(|w| (w.clone(), w.tx.clone()))
+                                    {
+                                        debug!("!!!!!!!!!! WAKE: Attempting to assign task to worker {} !!!!!!!!!!",
+                                worker_tid);
+                                        match worker.assign_task(next_task, &tx) {
+                                            Ok(()) => {
+                                                debug!("!!!!!!!!!! WAKE: Task assigned, doing context switch !!!!!!!!!!");
+                                                if let Err(e) = self.context_switch_worker(worker_tid) {
+                                                    error!("!!!!!!!!!! WAKE: Context switch failed: {} !!!!!!!!!!", e);
+                                                    self.worker_pool.update_worker_status(
+                                                        worker_tid,
+                                                        WorkerStatus::Waiting,
+                                                        None
+                                                    );
+                                                }
+                                            }
+                                            Err(failed_task) => {
+                                                debug!("!!!!!!!!!! WAKE: Task assignment failed !!!!!!!!!!");
+                                                let mut task_queue = self.task_queue.lock().unwrap();
+                                                task_queue.enqueue(failed_task);
+                                                self.worker_pool.update_worker_status(
+                                                    worker_tid,
+                                                    WorkerStatus::Waiting,
+                                                    None
+                                                );
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    debug!("!!!!!!!!!! WAKE: No pending tasks found !!!!!!!!!!");
+                                }
                             }
-                            // Get next task before releasing any locks
-                            self.task_queue.get_next_task()
-                        } else {
-                            None
-                        };
+                        },
+                        WorkerStatus::Blocked => {
+                            debug!("!!!!!!!!!! WAKE: This is a sleep/IO wakeup WAKE (worker was Blocked) !!!!!!!!!!");
+                            debug!("Server {}: Worker {} unblocking", self.id, worker_tid);
+                            // Keep the current task - worker is resuming after being blocked
+                            self.worker_pool.update_worker_status(
+                                worker_tid,
+                                WorkerStatus::Running,
+                                current_task
+                            );
 
-                        // Now update worker state based on next task availability
-                        let mut workers = self.worker_pool.workers.lock().unwrap();
-                        if let Some(worker) = workers.get_mut(&worker_tid) {
-                            if let Some(task) = next_task {
-                                debug!("Server {}: Assigning next task {} to worker {}",
-                                self.id, task.id, worker_tid);
-                                // Have next task - transition directly to Running
-                                worker.status = WorkerStatus::Running;
-                                worker.current_task = Some(task.id);
-                                drop(workers);
+                            debug!("Server {}: switching back to worker after sleep/io WAKE. Worker {} ", self.id, worker_tid);
+                            // Context switch back to the worker to let it continue its task
+                            if let Err(e) = self.context_switch_worker(worker_tid) {
+                                error!("Failed to context switch back to unblocked worker {}: {}", worker_tid, e);
+                            }
+                        },
+                        WorkerStatus::Waiting => {
+                            debug!("!!!!!!!!!! WAKE: This is a Wait->Wake from klib (worker already Waiting) !!!!!!!!!!");
+                            let mut task_queue = self.task_queue.lock().unwrap();
+                            if let Some(task) = task_queue.get_next_task() {
+                                debug!("!!!!!!!!!! WAKE: Found task for waiting worker !!!!!!!!!!");
+                                self.worker_pool.update_worker_status(
+                                    worker_tid,
+                                    WorkerStatus::Running,
+                                    Some(task.id)
+                                );
+                                task_queue.mark_in_progress(task.id, worker_tid);
+                                drop(task_queue);
 
-                                // Now do task assignment and context switch
                                 if let Some((worker, tx)) = self.worker_pool.workers.lock().unwrap()
                                     .get(&worker_tid)
                                     .map(|w| (w.clone(), w.tx.clone()))
                                 {
                                     match worker.assign_task(task, &tx) {
                                         Ok(()) => {
-                                            debug!("Server {}: Task assigned, switching to worker {}",
-                                            self.id, worker_tid);
-                                            self.context_switch_worker(worker_tid)?;
-                                        }
-                                        Err(failed_task) => {
-                                            debug!("Server {}: Task assignment failed for worker {}",
-                                            self.id, worker_tid);
-                                            self.task_queue.enqueue(failed_task);
-                                            let mut workers = self.worker_pool.workers.lock().unwrap();
-                                            if let Some(worker) = workers.get_mut(&worker_tid) {
-                                                worker.status = WorkerStatus::Waiting;
-                                                worker.current_task = None;
+                                            debug!("!!!!!!!!!! WAKE: Assigned task to waiting worker !!!!!!!!!!");
+                                            if let Err(e) = self.context_switch_worker(worker_tid) {
+                                                error!("!!!!!!!!!! WAKE: Context switch failed for waiting worker !!!!!!!!!!");
+                                                self.worker_pool.update_worker_status(
+                                                    worker_tid,
+                                                    WorkerStatus::Waiting,
+                                                    None
+                                                );
                                             }
                                         }
+                                        Err(failed_task) => {
+                                            debug!("!!!!!!!!!! WAKE: Task assignment failed for waiting worker !!!!!!!!!!");
+                                            let mut task_queue = self.task_queue.lock().unwrap();
+                                            task_queue.enqueue(failed_task);
+                                            self.worker_pool.update_worker_status(
+                                                worker_tid,
+                                                WorkerStatus::Waiting,
+                                                None
+                                            );
+                                        }
                                     }
                                 }
-                            } else {
-                                debug!("Server {}: No next task available, worker {} going to Waiting",
-                                self.id, worker_tid);
-                                // No next task - go to Waiting
-                                worker.status = WorkerStatus::Waiting;
-                                worker.current_task = None;
                             }
                         }
-                    },
-                    WorkerStatus::Blocked => {
-                        debug!("!!!!!!!!!! WAKE: This is a sleep/IO wakeup WAKE (worker was Blocked) !!!!!!!!!!");
-                        self.worker_pool.update_worker_status(
-                            worker_tid,
-                            WorkerStatus::Running,
-                            current_task
-                        );
-
-                        debug!("Server {}: switching back to worker after sleep/io WAKE. Worker {} ",
-                        self.id, worker_tid);
-                        self.context_switch_worker(worker_tid)?;
-                    },
-                    WorkerStatus::Waiting => {
-                        debug!("!!!!!!!!!! WAKE: This is a Wait->Wake from klib (worker already Waiting) !!!!!!!!!!");
-                        if let Some(next_task) = self.task_queue.get_next_task() {
+                        _ => {
+                            debug!("!!!!!!!!!! WAKE: This is likely an initial registration WAKE (worker status: {:?}) !!!!!!!!!!",
+                    current_status);
+                            debug!("Server {}: Worker {} in initial state", self.id, worker_tid);
                             self.worker_pool.update_worker_status(
                                 worker_tid,
-                                WorkerStatus::Running,
-                                Some(next_task.id)
+                                WorkerStatus::Waiting,
+                                None
                             );
-
-                            self.task_queue.mark_in_progress(next_task.id, worker_tid);
-
-                            if let Some((worker, tx)) = self.worker_pool.workers.lock().unwrap()
-                                .get(&worker_tid)
-                                .map(|w| (w.clone(), w.tx.clone()))
-                            {
-                                match worker.assign_task(next_task, &tx) {
-                                    Ok(()) => {
-                                        self.context_switch_worker(worker_tid)?;
-                                    }
-                                    Err(failed_task) => {
-                                        self.task_queue.enqueue(failed_task);
-                                        self.worker_pool.update_worker_status(
-                                            worker_tid,
-                                            WorkerStatus::Waiting,
-                                            None
-                                        );
-                                    }
-                                }
-                            }
                         }
                     }
-                    _ => {
-                        debug!("!!!!!!!!!! WAKE: This is likely an initial registration WAKE (worker status: {:?}) !!!!!!!!!!",
-                        current_status);
-                        self.worker_pool.update_worker_status(
-                            worker_tid,
-                            WorkerStatus::Waiting,
-                            None
-                        );
-                    }
+                } else {
+                    debug!("!!! NO FUCKING WORKER STATE FOR WORKER {}!!", worker_tid);
                 }
             },
             3 => { // WAIT
                 debug!("!!!!!!!!!! EXPLICIT WAIT EVENT - THIS SHOULD BE RARE !!!!!!!!!!");
                 debug!("Server {}: Got explicit WAIT from worker {}", self.id, worker_tid);
                 if let Some((current_status, _)) = self.worker_pool.get_worker_state(worker_tid) {
-                    debug!("Server {}: Worker {} current status: {:?}",
-                    self.id, worker_tid, current_status);
+                    debug!("Server {}: Worker {} current status: {:?}", self.id, worker_tid, current_status);
                     if current_status != WorkerStatus::Waiting {
                         self.worker_pool.update_worker_status(worker_tid, WorkerStatus::Waiting, None);
                     }
@@ -936,19 +962,17 @@ impl Server {
         debug!("Server {}: Attempting to schedule tasks...", self.id);
         let mut workers = self.worker_pool.workers.lock().unwrap();
         debug!("Server {}: Looking for waiting workers among {} workers",
-            self.id, workers.len());
-
+        self.id, workers.len());
         if let Some((_, worker)) = workers.iter_mut().find(|(_, w)| w.status == WorkerStatus::Waiting) {
+            debug!("Server {}: Found waiting worker {} with status {:?}",
+            self.id, worker.id, worker.status);
             let tx = worker.tx.clone();
             let worker_tid = worker.tid;
             let worker_clone = worker.clone();
             drop(workers);
 
-            debug!("Server {}: Found waiting worker {} with status {:?}",
-                self.id, worker_clone.id, worker_clone.status);
-
-            // Use direct TaskQueue methods instead of locking
-            if let Some(task) = self.task_queue.get_next_task() {
+            let mut task_queue = self.task_queue.lock().unwrap();
+            if let Some(task) = task_queue.get_next_task() {
                 info!("Server {}: Assigning task to worker {}", self.id, worker_clone.id);
 
                 self.worker_pool.update_worker_status(
@@ -957,18 +981,19 @@ impl Server {
                     Some(task.id)
                 );
 
-                self.task_queue.mark_in_progress(task.id, worker_tid);
+                task_queue.mark_in_progress(task.id, worker_tid);
+                drop(task_queue);
 
                 match worker_clone.assign_task(task, &tx) {
                     Ok(()) => {
                         match self.context_switch_worker(worker_tid) {
                             Ok(()) => {
                                 debug!("Server {}: Successfully switched to worker {}",
-                                    self.id, worker_tid);
+                                self.id, worker_tid);
                             }
                             Err(e) => {
                                 debug!("Server {}: Context switch failed for worker {}: {}",
-                                    self.id, worker_tid, e);
+                                self.id, worker_tid, e);
                                 self.worker_pool.update_worker_status(
                                     worker_tid,
                                     WorkerStatus::Waiting,
@@ -979,7 +1004,8 @@ impl Server {
                         }
                     }
                     Err(failed_task) => {
-                        self.task_queue.enqueue(failed_task);
+                        let mut task_queue = self.task_queue.lock().unwrap();
+                        task_queue.enqueue(failed_task);
                         self.worker_pool.update_worker_status(
                             worker_tid,
                             WorkerStatus::Waiting,
@@ -1075,7 +1101,7 @@ impl Executor {
 
     fn submit<F>(&self, f: F)
     where
-        F: FnOnce(&TaskHandle) + Send + Sync + 'static,
+        F: FnOnce(&TaskHandle) + Send + 'static,
     {
         info!("Executor: Submitting new task");
         let task_id = Uuid::new_v4();
