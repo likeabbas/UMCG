@@ -4,6 +4,9 @@ a thread pool, and multiple servers with their own workers.
  */
 
 #![allow(warnings)]
+
+mod umcg_base;
+
 use crossbeam_queue::ArrayQueue;
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -11,11 +14,10 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
-use std::collections::{VecDeque, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 use log::error;
-
-static DEBUG_LOGGING: bool = true;
+use umcg_base::{UmcgCmd, UmcgEventType, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
 
 // Logging macros - MUST BE DEFINED BEFORE USE
 macro_rules! info {
@@ -32,40 +34,15 @@ macro_rules! debug {
     }};
 }
 
-fn debug_worker_id(worker_id: u64) -> String {
-    let server_id = (worker_id >> 32) as u32;
-    let tid = (worker_id & 0xFFFFFFFF) as u32;
-    format!("server:{} tid:{} (raw:{})", server_id, tid, worker_id)
-}
-
-const SYS_UMCG_CTL: i64 = 450;
-const UMCG_WORKER_ID_SHIFT: u64 = 5;
-const UMCG_WORKER_EVENT_MASK: u64 = (1 << UMCG_WORKER_ID_SHIFT) - 1;
-const UMCG_WAIT_FLAG_INTERRUPTED: u64 = 1;
-
-const WORKER_REGISTRATION_TIMEOUT_MS: u64 = 5000; // 5 second timeout for worker registration
-const EVENT_BUFFER_SIZE: usize = 2;
-
-#[derive(Debug, Copy, Clone)]
-#[repr(u64)]
-enum UmcgCmd {
-    RegisterWorker = 1,
-    RegisterServer,
-    Unregister,
-    Wake,
-    Wait,
-    CtxSwitch,
-}
-
-#[derive(Debug, PartialEq, Copy, Clone)]
-#[repr(u64)]
-enum UmcgEventType {
-    Block = 1,
-    Wake,
-    Wait,
-    Exit,
-    Timeout,
-    Preempt,
+fn log_with_timestamp(msg: &str) {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    println!("[{:>3}.{:03}] {}",
+             now.as_secs() % 1000,
+             now.subsec_millis(),
+             msg);
 }
 
 #[derive(Debug)]
@@ -441,6 +418,8 @@ impl WorkerPool {
                 worker.id, worker.status, status);
             worker.status = status;
             worker.current_task = task;
+        } else {
+            error!("WorkerPool: No worker found with tid {}", tid);
         }
     }
 
@@ -467,12 +446,12 @@ impl WorkerThread {
         info!("Starting WorkerThread {} for server {}", id, self.server_id);
 
         let handle = thread::spawn(move || {
-            if let Err(e) = set_cpu_affinity(self.cpu_id) {
+            if let Err(e) = umcg_base::set_cpu_affinity(self.cpu_id) {
                 debug!("Could not set CPU affinity for worker {} to CPU {}: {}",
                     id, self.cpu_id, e);
             }
 
-            self.tid = get_thread_id();
+            self.tid = umcg_base::get_thread_id();
             info!("Worker {}: Initialized with tid {}", self.id, self.tid);
 
             tid_tx.send(self.tid).expect("Failed to send worker tid");
@@ -485,7 +464,7 @@ impl WorkerThread {
                 self.id, worker_id, self.server_id);
 
             // Register with UMCG and specific server
-            let reg_result = sys_umcg_ctl(
+            let reg_result = umcg_base::sys_umcg_ctl(
                 0,
                 UmcgCmd::RegisterWorker,
                 0,
@@ -550,7 +529,7 @@ impl WorkerThread {
                 self.id, self.tid);
 
                         // After completing a task, wait for more work
-                        let wait_result = sys_umcg_ctl(
+                        let wait_result = umcg_base::sys_umcg_ctl(
                             self.server_id as u64,
                             UmcgCmd::Wait,
                             0,
@@ -568,7 +547,7 @@ impl WorkerThread {
                     }
                     Err(TryRecvError::Empty) => {
                         // No tasks available, go into wait state
-                        let wait_result = sys_umcg_ctl(
+                        let wait_result = umcg_base::sys_umcg_ctl(
                             self.server_id as u64,
                             UmcgCmd::Wait,
                             0,
@@ -589,7 +568,7 @@ impl WorkerThread {
 
             // Include server ID in unregister call
             info!("Worker {}: Beginning shutdown", self.id);
-            let unreg_result = sys_umcg_ctl(
+            let unreg_result = umcg_base::sys_umcg_ctl(
                 self.server_id as u64,
                 UmcgCmd::Unregister,
                 0,
@@ -687,7 +666,7 @@ impl Server {
                 return Err(ServerError::WorkerRegistrationTimeout { worker_id });
             }
 
-            let ret = umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
+            let ret = umcg_base::umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
             if ret != 0 {
                 return Err(ServerError::WorkerRegistrationFailed {
                     worker_id,
@@ -805,27 +784,7 @@ impl Server {
                 self.worker_pool.update_worker_status_keep_task(worker_tid, WorkerStatus::Blocked);
             },
             2 => { // WAKE
-                /* THIS COMMENT IS OUT DATED IGNORE
-                 * IMPORTANT: Why we handle task completion in WAKE instead of WAIT
-                 *
-                 * The kernel/klib UMCG implementation has an interesting behavior:
-                 * When a worker calls sys_umcg_ctl with UmcgCmd::Wait, internally this
-                 * results in the server receiving a WAKE event (type 2) instead of a
-                 * WAIT event (type 3).
-                 *
-                 * This happens because:
-                 * 1. In the NanoVMs klib, when a worker calls Wait:
-                 *    - The worker's status is set to UMCG_WORKER_WAITING
-                 *    - The worker is added to a blockq
-                 *    - The server is woken up via blockq_wake_one
-                 *
-                 * 2. This blockq wakeup mechanism results in a WAKE event being sent,
-                 *    even though the worker's intention was to WAIT for more work.
-                 *
-                 * 3. Therefore, we need to differentiate between two types of WAKE events:
-                 *    a) Wake after blocking (e.g., I/O, sleep) - worker needs to continue its current task
-                 *    b) Wake after task completion - worker is ready for a new task
-                 *
+                /*
                  * We differentiate these cases by checking the worker's current state:
                  * - If worker was Running and we get a Wake: They completed a task
                  * - If worker was Blocked and we get a Wake: They can continue their task
@@ -1012,13 +971,13 @@ impl Server {
     }
 
     fn run_server(&self) -> Result<(), ServerError> {
-        if let Err(e) = set_cpu_affinity(self.cpu_id) {
+        if let Err(e) = umcg_base::set_cpu_affinity(self.cpu_id) {
             return Err(ServerError::SystemError(e));
         }
 
         info!("Server {}: Starting up", self.id);
 
-        let reg_result = sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0);
+        let reg_result = umcg_base::sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0);
         if reg_result != 0 {
             return Err(ServerError::RegistrationFailed(reg_result));
         }
@@ -1037,7 +996,7 @@ impl Server {
             let mut events = [0u64; 6];
             debug!("!!!!!!!!!! SERVER EVENT LOOP - WAITING FOR EVENTS (with timeout) !!!!!!!!!!");
             // Add a short timeout (e.g., 100ms) so we don't block forever
-            let ret = sys_umcg_ctl(
+            let ret = umcg_base::sys_umcg_ctl(
                 0,
                 UmcgCmd::Wait,
                 0,
@@ -1147,7 +1106,7 @@ impl Server {
 
         // Final UMCG cleanup
         info!("Server {}: Unregistering from UMCG", self.id);
-        let unreg_result = sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0);
+        let unreg_result = umcg_base::sys_umcg_ctl(0, UmcgCmd::Unregister, 0, 0, None, 0);
         if unreg_result != 0 {
             error!("Server {}: UMCG unregister failed: {}", self.id, unreg_result);
         }
@@ -1157,7 +1116,7 @@ impl Server {
         let mut events = [0u64; 2];
         debug!("Server {}: Context switching to worker {}", self.id, worker_tid);
 
-        let switch_result = sys_umcg_ctl(
+        let switch_result = umcg_base::sys_umcg_ctl(
             0,
             UmcgCmd::CtxSwitch,
             worker_tid,
@@ -1278,85 +1237,6 @@ impl Executor {
             server.add_task(Task::Shutdown);
         }
     }
-}
-
-fn get_thread_id() -> pid_t {
-    unsafe { syscall(SYS_gettid) as pid_t }
-}
-
-fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
-        let set_ref = &mut *set.as_mut_ptr();
-
-        libc::CPU_ZERO(set_ref);
-        libc::CPU_SET(cpu_id, set_ref);
-
-        let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
-        if result != 0 {
-            debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
-        } else {
-            debug!("Successfully set CPU affinity to {}", cpu_id);
-        }
-    }
-    Ok(())
-}
-
-fn sys_umcg_ctl(
-    flags: u64,
-    cmd: UmcgCmd,
-    next_tid: pid_t,
-    abs_timeout: u64,
-    events: Option<&mut [u64]>,
-    event_sz: i32,
-) -> i32 {
-    debug!("UMCG syscall - cmd: {:?}, tid: {}, flags: {}", cmd, next_tid, flags);
-    let result = unsafe {
-        syscall(
-            SYS_UMCG_CTL,
-            flags as i64,
-            cmd as i64,
-            next_tid as i64,
-            abs_timeout as i64,
-            events.map_or(std::ptr::null_mut(), |e| e.as_mut_ptr()) as i64,
-            event_sz as i64,
-        ) as i32
-    };
-    debug!("UMCG syscall result: {}", result);
-    result
-}
-
-fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz: i32) -> i32 {
-    let mut flags = 0;
-    loop {
-        debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {} !!!!!!!!!!", worker_id, flags);
-        let events = events_buf.as_deref_mut();
-        let ret = sys_umcg_ctl(
-            flags,
-            UmcgCmd::Wait,
-            (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
-            0,
-            events,
-            event_sz,
-        );
-        debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
-        if ret != -1 || unsafe { *libc::__errno_location() } != EINTR {
-            return ret;
-        }
-        flags = UMCG_WAIT_FLAG_INTERRUPTED;
-    }
-}
-
-fn log_with_timestamp(msg: &str) {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap();
-    println!("[{:>3}.{:03}] {}",
-             now.as_secs() % 1000,
-             now.subsec_millis(),
-             msg);
 }
 
 
