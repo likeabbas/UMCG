@@ -697,7 +697,8 @@ impl Server {
 
             let event = events[0];
             let event_type = event & UMCG_WORKER_EVENT_MASK;
-
+            // Maybe here we need to do a Wake and then a Wait
+            // context switch back to the worker after it Wakes so it can go into the Wait state
             if event_type == UmcgEventType::Wake as u64 {
                 return Ok(event);
             } else {
@@ -706,6 +707,66 @@ impl Server {
             }
         }
     }
+    // fn wait_for_worker_registration(&self, worker_id: usize) -> Result<u64, ServerError> {
+    //     let start = SystemTime::now();
+    //     let timeout = Duration::from_millis(WORKER_REGISTRATION_TIMEOUT_MS);
+    //     let mut events = [0u64; EVENT_BUFFER_SIZE];
+    //
+    //     // First wait for Wake event
+    //     loop {
+    //         if start.elapsed().unwrap() > timeout {
+    //             return Err(ServerError::WorkerRegistrationTimeout { worker_id });
+    //         }
+    //
+    //         let ret = umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
+    //         if ret != 0 {
+    //             return Err(ServerError::WorkerRegistrationFailed {
+    //                 worker_id,
+    //                 error: ret
+    //             });
+    //         }
+    //
+    //         let event = events[0];
+    //         let event_type = event & UMCG_WORKER_EVENT_MASK;
+    //
+    //         if event_type == UmcgEventType::Wake as u64 {
+    //             // Got Wake, now context switch to let worker enter Wait state
+    //             let worker_tid = (event >> UMCG_WORKER_ID_SHIFT) as i32;
+    //
+    //             let switch_result = sys_umcg_ctl(
+    //                 0,
+    //                 UmcgCmd::CtxSwitch,
+    //                 worker_tid,
+    //                 0,
+    //                 Some(&mut events),
+    //                 EVENT_BUFFER_SIZE as i32
+    //             );
+    //
+    //             if switch_result != 0 {
+    //                 return Err(ServerError::SystemError(std::io::Error::last_os_error()));
+    //             }
+    //
+    //             // Now wait for Wait event
+    //             let ret = umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
+    //             if ret != 0 {
+    //                 return Err(ServerError::WorkerRegistrationFailed {
+    //                     worker_id,
+    //                     error: ret
+    //                 });
+    //             }
+    //
+    //             let wait_event = events[0];
+    //             let wait_event_type = wait_event & UMCG_WORKER_EVENT_MASK;
+    //
+    //             if wait_event_type == UmcgEventType::Wait as u64 {
+    //                 return Ok(event); // Return original Wake event
+    //             }
+    //         }
+    //
+    //         debug!("Server {}: Unexpected event {} during worker {} registration",
+    //         self.id, event_type, worker_id);
+    //     }
+    // }
 
     pub fn add_task(&self, task: Task) {
         log_with_timestamp(&format!("Server {}: Adding new task", self.id));
@@ -1379,26 +1440,26 @@ pub fn run_multi_server_demo() -> i32 {
     };
     let executor = Executor::new(config);
 
-    log_with_timestamp("Starting executor...");
+    debug!("Starting executor...");
     executor.start();
 
     thread::sleep(Duration::from_millis(100));
 
-    log_with_timestamp("Submitting tasks to multiple servers...");
+    debug!("Submitting tasks to multiple servers...");
 
     for i in 0..9 {
         let task = move |handle: &TaskHandle| {
-            log_with_timestamp(&format!("Task {}: Starting execution", i));
+            debug!("Task {}: Starting execution", i);
             thread::sleep(Duration::from_secs(1));
 
             let parent_id = i;
             handle.submit(move |_| {
-                log_with_timestamp(&format!("Child task of initial task {}: Starting work", parent_id));
+                debug!("Child task of initial task {}: Starting work", parent_id);
                 thread::sleep(Duration::from_millis(500));
                 log_with_timestamp(&format!("Child task of initial task {}: Completed", parent_id));
             });
 
-            log_with_timestamp(&format!("Task {}: Completed", i));
+            debug!("Task {}: Completed", i);
         };
 
         executor.submit(Box::new(task));
