@@ -1,6 +1,31 @@
-use libc::{pid_t, syscall, EINTR};
+use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
 
 pub static DEBUG_LOGGING: bool = true;
+
+macro_rules! info {
+    ($($arg:tt)*) => {{
+        log_with_timestamp(&format!($($arg)*));
+    }};
+}
+
+macro_rules! debug {
+    ($($arg:tt)*) => {{
+        if DEBUG_LOGGING {
+            log_with_timestamp(&format!($($arg)*));
+        }
+    }};
+}
+
+fn log_with_timestamp(msg: &str) {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    println!("[{:>3}.{:03}] {}",
+             now.as_secs() % 1000,
+             now.subsec_millis(),
+             msg);
+}
 
 fn debug_worker_id(worker_id: u64) -> String {
     let server_id = (worker_id >> 32) as u32;

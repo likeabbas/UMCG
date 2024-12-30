@@ -6,6 +6,8 @@ a thread pool, and multiple servers with their own workers.
 #![allow(warnings)]
 
 mod umcg_base;
+mod task_stats;
+mod attempt2;
 
 use crossbeam_queue::ArrayQueue;
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 use log::error;
+use task_stats::TaskStats;
 use umcg_base::{UmcgCmd, UmcgEventType, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
 
 // Logging macros - MUST BE DEFINED BEFORE USE
@@ -32,6 +35,12 @@ macro_rules! debug {
             log_with_timestamp(&format!($($arg)*));
         }
     }};
+}
+
+pub fn run_basic_worker_test() -> i32 {
+    debug!("Running basic worker test...");
+    attempt2::test_basic_worker();
+    0
 }
 
 fn log_with_timestamp(msg: &str) {
@@ -74,50 +83,6 @@ impl std::fmt::Display for ServerError {
 
 impl std::error::Error for ServerError {}
 
-#[derive(Default)]
-struct TaskStats {
-    completed_tasks: Arc<Mutex<HashMap<Uuid, bool>>>,
-    total_tasks: AtomicUsize,
-    completed_count: AtomicUsize,
-}
-
-impl TaskStats {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            completed_tasks: Arc::new(Mutex::new(HashMap::new())),
-            total_tasks: AtomicUsize::new(0),
-            completed_count: AtomicUsize::new(0),
-        })
-    }
-
-    fn register_task(&self, task_id: Uuid) {
-        let mut tasks = self.completed_tasks.lock().unwrap();
-        tasks.insert(task_id, false);
-        self.total_tasks.fetch_add(1, Ordering::SeqCst);
-        debug!("Registered task {}, total tasks: {}", task_id, self.total_tasks.load(Ordering::SeqCst));
-    }
-
-    fn mark_completed(&self, task_id: Uuid) {
-        let mut tasks = self.completed_tasks.lock().unwrap();
-        if let Some(completed) = tasks.get_mut(&task_id) {
-            if !*completed {
-                *completed = true;
-                self.completed_count.fetch_add(1, Ordering::SeqCst);
-                debug!("Completed task {}, total completed: {}/{}",
-                    task_id,
-                    self.completed_count.load(Ordering::SeqCst),
-                    self.total_tasks.load(Ordering::SeqCst));
-            }
-        }
-    }
-
-    fn all_tasks_completed(&self) -> bool {
-        let completed = self.completed_count.load(Ordering::SeqCst);
-        let total = self.total_tasks.load(Ordering::SeqCst);
-        completed == total && total > 0
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum WorkerStatus {
     Initializing,    // Worker thread started but not registered with UMCG
@@ -149,7 +114,6 @@ struct WorkerState {
     tid: pid_t,
     status: WorkerStatus,
     current_task: Option<Uuid>,
-    server_id: usize,  // Track which server this worker belongs to
 }
 
 impl WorkerState {
@@ -159,7 +123,6 @@ impl WorkerState {
             tid,
             status: WorkerStatus::Waiting,
             current_task: None,
-            server_id,  // Set server_id
         }
     }
 }

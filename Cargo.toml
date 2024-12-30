@@ -19,3 +19,4 @@ uuid = { version = "1.11.0", features = ["v4"] }
 log = "0.4.22"
 crossbeam-queue = "0.3.12"
 dashmap = "6.1.0"
+slotmap = "1.0.7"
