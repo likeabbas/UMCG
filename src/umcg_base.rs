@@ -130,3 +130,25 @@ pub fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event
         flags = UMCG_WAIT_FLAG_INTERRUPTED;
     }
 }
+
+pub fn umcg_wait_retry_timeout(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz: i32, timeout_ns: u64) -> i32 {
+    let mut flags = 0;
+    loop {
+        debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {}, timeout: {} ns !!!!!!!!!!",
+            worker_id, flags, timeout_ns);
+        let events = events_buf.as_deref_mut();
+        let ret = sys_umcg_ctl(
+            flags,
+            UmcgCmd::Wait,
+            (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
+            timeout_ns,
+            events,
+            event_sz,
+        );
+        debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
+        if ret != -1 || unsafe { *libc::__errno_location() } != EINTR {
+            return ret;
+        }
+        flags = UMCG_WAIT_FLAG_INTERRUPTED;
+    }
+}
