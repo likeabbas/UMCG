@@ -7,6 +7,7 @@ use uuid::Uuid;
 use std::thread::{self, JoinHandle};
 use std::sync::mpsc::{channel, Sender, Receiver, TryRecvError};
 use log::error;
+use crate::umcg_base;
 use crate::umcg_base::{UmcgCmd, UmcgEventType, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
 
 macro_rules! info {
@@ -81,8 +82,8 @@ impl Worker {
 
     fn spawn(
         id: usize,
-        states: Arc<Mutex<HashMap<pid_t, Mutex<WorkerStatus>>>>,
-        channels: Arc<Mutex<HashMap<pid_t, Sender<WorkerTask>>>>
+        states: Arc<Mutex<HashMap<u64, Mutex<WorkerStatus>>>>,
+        channels: Arc<Mutex<HashMap<u64, Sender<WorkerTask>>>>
     ) -> JoinHandle<()> {  // No longer need to return the Sender
         let (tx, rx) = channel();
         let worker = Worker::new(id, rx);
@@ -93,10 +94,10 @@ impl Worker {
             // Store state and channel
             {
                 let mut states = states.lock().unwrap();
-                states.insert(tid, Mutex::new(WorkerStatus::Initializing));
+                states.insert((tid as u64) << UMCG_WORKER_ID_SHIFT, Mutex::new(WorkerStatus::Initializing));
 
                 let mut channels = channels.lock().unwrap();
-                channels.insert(tid, tx);
+                channels.insert((tid as u64) << UMCG_WORKER_ID_SHIFT, tx);
             }
 
             debug!("Worker {} spawned with tid {}", worker.id, tid);
@@ -211,15 +212,213 @@ impl Worker {
     }
 }
 
+struct WorkerQueues {
+    pending: ArrayQueue<usize>,
+    running: ArrayQueue<usize>,
+    preempted: ArrayQueue<usize>,
+}
+
+impl WorkerQueues {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            pending: ArrayQueue::new(capacity),
+            running: ArrayQueue::new(capacity),
+            preempted: ArrayQueue::new(capacity)
+        }
+    }
+}
+
 struct Server {
     id: usize,
-    tid: pid_t,
-    states: Arc<HashMap<pid_t, Mutex<WorkerStatus>>>,
-    channels: Arc<HashMap<pid_t, Sender<WorkerTask>>>,
-    pending_workers: Arc<ArrayQueue<pid_t>>,
-    running_workers: Arc<ArrayQueue<pid_t>>,
-    preempted_workers: Arc<ArrayQueue<pid_t>>,
+    states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+    channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
     manage_tasks: Arc<dyn ManageTask>,
+    worker_queues: Arc<WorkerQueues>,
+}
+
+impl Server {
+    pub fn new(
+        id: usize,
+        states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+        channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
+        manage_tasks: Arc<dyn ManageTask>,
+        worker_queues: Arc<WorkerQueues>
+    ) -> Self {
+        Self {
+            id,
+            states: states.clone(),
+            channels: channels.clone(),
+            manage_tasks,
+            worker_queues: worker_queues.clone(),
+        }
+    }
+
+    // fn start_initial_server(mut self) -> JoinHandle<()> {
+    //     thread::spawn(move || {
+    //         // Register server with UMCG
+    //         let reg_result = unsafe {
+    //             libc::syscall(
+    //                 SYS_UMCG_CTL as i64,
+    //                 0,
+    //                 UmcgCmd::RegisterServer as i64,
+    //                 0,
+    //                 0,
+    //                 std::ptr::null_mut::<u64>() as i64,
+    //                 0
+    //             )
+    //         };
+    //
+    //         if reg_result == 0 {
+    //             debug!("Server {}: UMCG registration complete", self.id);
+    //         } else {
+    //             debug!("Server {}: UMCG registration failed: {}", self.id, reg_result);
+    //             return;
+    //         }
+    //
+    //         // Now wait for UMCG worker registration events
+    //         debug!("Server {}: Waiting for worker registration events", self.id);
+    //         let mut events = [0u64; EVENT_BUFFER_SIZE];
+    //
+    //         // Process registration for each worker
+    //         for (&worker_tid, status) in self.states.iter() {
+    //             let start = SystemTime::now();
+    //             let timeout = Duration::from_millis(WORKER_REGISTRATION_TIMEOUT_MS);
+    //
+    //             loop {
+    //                 if start.elapsed().unwrap() > timeout {
+    //                     error!("Server {}: Worker registration timeout for worker {}",
+    //                     self.id, worker_tid);
+    //                     break;
+    //                 }
+    //
+    //                 let ret = unsafe {
+    //                     libc::syscall(
+    //                         SYS_UMCG_CTL as i64,
+    //                         0,
+    //                         UmcgCmd::Wait as i64,
+    //                         0,
+    //                         0,
+    //                         events.as_mut_ptr() as i64,
+    //                         EVENT_BUFFER_SIZE as i64
+    //                     )
+    //                 };
+    //
+    //                 if ret != 0 {
+    //                     error!("Server {}: Wait failed during worker registration: {}",
+    //                     self.id, ret);
+    //                     break;
+    //                 }
+    //
+    //                 for &event in events.iter().take_while(|&&e| e != 0) {
+    //                     let event_type = event & UMCG_WORKER_EVENT_MASK;
+    //                     let event_worker_tid = (event >> UMCG_WORKER_ID_SHIFT);
+    //
+    //                     if event_type == UmcgEventType::Wake as u64 && event_worker_tid == worker_tid {
+    //                         debug!("Server {}: Got wake event for worker {}", self.id, worker_tid);
+    //
+    //                         // Context switch to let worker enter wait state
+    //                         let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
+    //                         let switch_ret = unsafe {
+    //                             libc::syscall(
+    //                                 SYS_UMCG_CTL as i64,
+    //                                 0,
+    //                                 UmcgCmd::CtxSwitch as i64,
+    //                                 worker_tid as i32,
+    //                                 0,
+    //                                 switch_events.as_mut_ptr() as i64,
+    //                                 EVENT_BUFFER_SIZE as i64
+    //                             )
+    //                         };
+    //
+    //                         if switch_ret == 0 {
+    //                             // Update worker status to waiting
+    //                             if let Some(status) = self.states.get(&worker_tid) {
+    //                                 let mut status = status.lock().unwrap();
+    //                                 *status = WorkerStatus::Waiting;
+    //                                 debug!("Server {}: Worker {} status set to waiting",
+    //                                 self.id, worker_tid);
+    //                             }
+    //                             break;
+    //                         } else {
+    //                             error!("Server {}: Context switch failed for worker {}: {}",
+    //                             self.id, worker_tid, switch_ret);
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //
+    //         debug!("Server {}: Worker registration complete", self.id);
+    //     })
+    // }
+
+    fn start_initial_server(mut self) -> JoinHandle<()> {
+        thread::spawn(move || {
+            // Register server with UMCG
+            let reg_result = unsafe {
+                libc::syscall(
+                    SYS_UMCG_CTL as i64,
+                    0,
+                    UmcgCmd::RegisterServer as i64,
+                    0,
+                    0,
+                    std::ptr::null_mut::<u64>() as i64,
+                    0
+                )
+            };
+
+            if reg_result == 0 {
+                debug!("Server {}: UMCG registration complete", self.id);
+            } else {
+                debug!("Server {}: UMCG registration failed: {}", self.id, reg_result);
+                return;
+            }
+
+            // Now wait for UMCG worker registration events
+            debug!("Server {}: Waiting for worker registration events", self.id);
+            let mut events = [0u64; EVENT_BUFFER_SIZE];
+
+            // Process registration for each worker
+            for (&worker_id, status) in self.states.iter() {
+                let start = SystemTime::now();
+                let timeout = Duration::from_millis(WORKER_REGISTRATION_TIMEOUT_MS);
+
+                loop {
+                    if start.elapsed().unwrap() > timeout {
+                        error!("Server {}: Worker registration timeout for worker {}",
+                        self.id, worker_id);
+                        break;
+                    }
+
+                    let ret = umcg_base::umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
+                    if ret != 0 {
+                        error!("Server {}: Wait failed during worker registration: {}",
+                        self.id, ret);
+                        break;
+                    }
+
+                    let event = events[0];
+                    let event_type = event & UMCG_WORKER_EVENT_MASK;
+
+                    if event_type == UmcgEventType::Wake as u64 {
+                        // Update worker status to waiting
+                        if let Some(status) = self.states.get(&worker_id) {
+                            let mut status = status.lock().unwrap();
+                            *status = WorkerStatus::Waiting;
+                            debug!("Server {}: Worker {} status set to waiting",
+                            self.id, worker_id);
+                        }
+                        break;
+                    } else {
+                        debug!("Server {}: Unexpected event {} during worker {} registration",
+                        self.id, event_type, worker_id);
+                    }
+                }
+            }
+
+            debug!("Server {}: Worker registration complete", self.id);
+        })
+    }
 }
 
 struct Executor {
@@ -235,9 +434,36 @@ impl Executor {
         }
     }
 
+    pub fn initialize_first_server_and_setup_workers(
+        &mut self,
+        states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+        channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
+        worker_queues: Arc<WorkerQueues>,
+        manage_tasks: Arc<dyn ManageTask>,
+    ) {
+        let server = Server::new(
+            0, // First server has id 0
+            states,
+            channels,
+            manage_tasks,
+            worker_queues,
+        );
+
+        debug!("Executor: Starting initial server");
+        server.start_initial_server();
+    }
+
+    pub fn initialize_servers(
+        &mut self,
+        states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+        channels: Arc<HashMap<u64, Sender<WorkerTask>>>) {
+
+
+    }
+
     pub fn initialize_workers(&mut self) -> (
-        Arc<HashMap<pid_t, Mutex<WorkerStatus>>>,
-        Arc<HashMap<pid_t, Sender<WorkerTask>>>
+        Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+        Arc<HashMap<u64, Sender<WorkerTask>>>
     ) {
         let worker_states = Arc::new(Mutex::new(HashMap::new()));
         let worker_channels = Arc::new(Mutex::new(HashMap::new()));
@@ -259,7 +485,7 @@ impl Executor {
         // Create final non-mutex wrapped HashMaps
         let final_states = worker_states.lock().unwrap().iter().map(|(&tid, status)| {
             let status_value = status.lock().unwrap().clone();
-            (tid, Mutex::new(status_value))
+            ((tid as u64) << UMCG_WORKER_ID_SHIFT, Mutex::new(status_value))
         }).collect();
 
         let final_channels = worker_channels.lock().unwrap().clone();
@@ -302,6 +528,8 @@ impl RemoveTask for TaskQueue {
     }
 }
 
+impl ManageTask for TaskQueue {}
+
 enum TaskState {
     Pending(Task),
     Running {
@@ -314,25 +542,33 @@ enum TaskState {
 }
 
 pub fn test_basic_worker() {
-    // Create channels manually for this test
-    let (tx, rx) = channel();
-    let worker = Worker::new(0, rx);
+    const WORKER_COUNT: usize = 2;
+    const QUEUE_CAPACITY: usize = 100;
 
-    // Spawn the worker in a thread
-    let handle = thread::spawn(move || {
-        debug!("Starting worker thread");
-        worker.start();
-        debug!("Worker thread completed");
+    // Create our task queue and worker queues
+    let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
+    let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
+
+    // Create executor with initial configuration
+    let mut executor = Executor::new(ExecutorConfig {
+        worker_count: WORKER_COUNT,
+        server_count: 1,
     });
 
-    // Small sleep to ensure worker has started
-    thread::sleep(Duration::from_millis(100));
+    // Initialize workers first - this will create and spawn worker threads
+    let (states, channels) = executor.initialize_workers();
 
-    debug!("Sending shutdown signal");
-    tx.send(WorkerTask::Shutdown).expect("Failed to send shutdown");
+    // Initialize first server with all shared resources
+    executor.initialize_first_server_and_setup_workers(
+        states,
+        channels,
+        worker_queues,
+        task_queue, // No need for casting, TaskQueue implements ManageTask
+    );
 
-    // Wait for worker to finish
-    handle.join().expect("Worker thread panicked");
+    // Give some time for everything to initialize
+    thread::sleep(Duration::from_secs(2));
+
     debug!("Test completed successfully");
 }
 
