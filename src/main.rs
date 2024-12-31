@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::ptr;
 use std::io::Write;
-use UMCG::{run_basic_worker_test, run_dynamic_task_demo, run_multi_server_demo};
+use UMCG::{run_basic_worker_test, run_dynamic_task_attempt2_demo, run_dynamic_task_demo, run_multi_server_demo};
 // Add this line for flush()
 
 const SYS_UMCG_CTL: i64 = 450;
@@ -723,12 +723,12 @@ fn run_full_tests() {
     // test_worker_first();
     // test_server_first();
     println!("what the fuck");
-    run_basic_worker_test();
+    run_dynamic_task_attempt2_demo();
 
-    println!("Running run_dynamic_task_demo");
-    run_dynamic_task_demo();
+    // println!("Running run_dynamic_task_demo");
+    // run_dynamic_task_demo();
 
-    println!("Running run_multi_server_demo");
+    // println!("Running run_multi_server_demo");
     // run_multi_server_demo();
     //
     // println!("Running UMCG test suite...");

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use crossbeam::queue::ArrayQueue;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
 use uuid::Uuid;
 use std::thread::{self, JoinHandle};
@@ -36,7 +36,7 @@ fn log_with_timestamp(msg: &str) {
              msg);
 }
 
-type Task = Box<dyn FnOnce() + Send + Sync>;
+type Task = Box<dyn FnOnce() + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq)]
 enum WorkerStatus {
@@ -704,9 +704,27 @@ impl Executor {
     pub fn initialize_servers(
         &mut self,
         states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
-        channels: Arc<HashMap<u64, Sender<WorkerTask>>>) {
+        channels: Arc<HashMap<u64, Sender<WorkerTask>>>
+    ) {
+        // Skip server 0 as it's already initialized
+        for server_id in 1..self.config.server_count {
+            debug!("Executor: Starting server {}", server_id);
 
+            // Create new server
+            let server = Server::new(
+                server_id,
+                server_id, // Using server_id as cpu_id since we don't care about CPU affinity
+                self.executor.clone()
+            );
 
+            // Start the server (just UMCG registration and event loop)
+            let handle = server.start_server();
+
+            // Store handle if needed
+            self.worker_handles.push(handle);
+        }
+
+        debug!("Executor: All {} servers initialized", self.config.server_count);
     }
 
     pub fn initialize_workers(&mut self) -> (
@@ -799,6 +817,67 @@ enum TaskState {
     Completed,
 }
 
+
+struct TaskStats {
+    total_tasks: AtomicUsize,
+    completed_tasks: AtomicUsize,
+}
+
+impl TaskStats {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            total_tasks: AtomicUsize::new(0),
+            completed_tasks: AtomicUsize::new(0),
+        })
+    }
+
+    fn register_task(&self) {
+        self.total_tasks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn mark_completed(&self) {
+        self.completed_tasks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn all_tasks_completed(&self) -> bool {
+        let completed = self.completed_tasks.load(Ordering::SeqCst);
+        let total = self.total_tasks.load(Ordering::SeqCst);
+        completed > 0 && completed == total
+    }
+
+    fn get_completion_stats(&self) -> (usize, usize) {
+        (
+            self.completed_tasks.load(Ordering::SeqCst),
+            self.total_tasks.load(Ordering::SeqCst)
+        )
+    }
+}
+
+#[derive(Clone)]
+struct TaskHandle {
+    task_queue: Arc<dyn ManageTask>,
+    task_stats: Arc<TaskStats>,
+}
+
+impl TaskHandle {
+    fn submit<F>(&self, f: Box<F>)
+    where
+        F: FnOnce() + Send + Sync + 'static,
+    {
+        self.task_stats.register_task();
+        let stats = self.task_stats.clone();
+
+        let wrapped_task = Box::new(move || {
+            f();
+            stats.mark_completed();
+        });
+
+        if let Err(_) = self.task_queue.add_task(wrapped_task) {
+            error!("Failed to add task to queue");
+        }
+    }
+}
+
 pub fn test_basic_worker() {
     const WORKER_COUNT: usize = 2;
     const QUEUE_CAPACITY: usize = 100;
@@ -848,4 +927,103 @@ pub fn test_basic_worker() {
     thread::sleep(Duration::from_millis(100));
 
     debug!("Test completed successfully");
+}
+
+pub fn run_dynamic_task_attempt2_demo() -> i32 {
+    const WORKER_COUNT: usize = 3;
+    const QUEUE_CAPACITY: usize = 100;
+
+    // Create task queue and worker queues
+    let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
+    let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
+    let task_stats = TaskStats::new();
+
+    // Create executor with initial configuration
+    let mut executor = Executor::new(ExecutorConfig {
+        worker_count: WORKER_COUNT,
+        server_count: 1,
+    });
+
+    // Initialize workers first
+    let (states, channels) = executor.initialize_workers();
+
+    // Create done flag for shutdown
+    let done = Arc::new(AtomicBool::new(false));
+
+    // Create task handle for submitting tasks
+    let task_handle = TaskHandle {
+        task_queue: task_queue.clone(),
+        task_stats: task_stats.clone(),
+    };
+
+    // Initialize first server with all shared resources
+    executor.initialize_first_server_and_setup_workers(
+        states,
+        channels,
+        worker_queues,
+        task_queue.clone(),
+        done.clone(),
+    );
+
+    // Give time for initialization
+    thread::sleep(Duration::from_millis(100));
+
+    debug!("Submitting initial tasks...");
+
+    // Submit initial tasks that will spawn child tasks
+    // Submit initial tasks that will spawn child tasks
+    // Submit initial tasks that will spawn child tasks
+    for i in 0..6 {
+        let parent_task_handle = task_handle.clone();
+        let parent_id = i;
+
+        parent_task_handle.clone().submit(Box::new(move || {
+            debug!("!!!! Initial task {}: STARTING task !!!!", parent_id);
+
+            debug!("!!!! Initial task {}: ABOUT TO SLEEP !!!!", parent_id);
+            thread::sleep(Duration::from_secs(2));
+            debug!("!!!! Initial task {}: WOKE UP FROM SLEEP !!!!", parent_id);
+
+            debug!("!!!! Initial task {}: PREPARING to spawn child task !!!!", parent_id);
+
+            // Clone task_handle before moving into the child task closure
+            parent_task_handle.submit(Box::new(move || {
+                debug!("!!!! Child task of initial task {}: STARTING work !!!!", parent_id);
+                thread::sleep(Duration::from_secs(1));
+                debug!("!!!! Child task of initial task {}: COMPLETED !!!!", parent_id);
+            }));
+
+            debug!("!!!! Initial task {}: COMPLETED !!!!", parent_id);
+        }));
+    }
+
+    debug!("All tasks submitted, waiting for completion...");
+
+    // Wait for completion with timeout and progress updates
+    let start = Instant::now();
+    let timeout = Duration::from_secs(30);
+
+    while !task_stats.all_tasks_completed() {
+        if start.elapsed() > timeout {
+            let (completed, total) = task_stats.get_completion_stats();
+            debug!("Timeout waiting for tasks to complete! ({}/{} completed)",
+                completed, total);
+            done.store(true, Ordering::SeqCst);
+            return 1;
+        }
+
+        if start.elapsed().as_secs() % 5 == 0 {
+            let (completed, total) = task_stats.get_completion_stats();
+            debug!("Progress: {}/{} tasks completed", completed, total);
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let (completed, total) = task_stats.get_completion_stats();
+    debug!("All tasks completed successfully ({}/{})", completed, total);
+
+    // Clean shutdown
+    done.store(true, Ordering::SeqCst);
+    0
 }

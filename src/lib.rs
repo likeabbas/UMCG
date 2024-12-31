@@ -43,6 +43,12 @@ pub fn run_basic_worker_test() -> i32 {
     0
 }
 
+pub fn run_dynamic_task_attempt2_demo() -> i32 {
+    debug!("Running dynamic task attempt2 test...");
+    attempt2::run_dynamic_task_attempt2_demo();
+    0
+}
+
 fn log_with_timestamp(msg: &str) {
     use std::time::SystemTime;
     let now = SystemTime::now()
