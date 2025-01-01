@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::ptr;
 use std::io::Write;
-use UMCG::{run_basic_worker_test, run_dynamic_task_attempt2_demo, run_dynamic_task_demo, run_echo_server_demo, run_multi_server_demo};
+use UMCG::{run_dynamic_task_attempt2_demo, run_dynamic_task_demo, run_echo_server_demo, run_multi_server_demo};
 // Add this line for flush()
 
 const SYS_UMCG_CTL: i64 = 450;

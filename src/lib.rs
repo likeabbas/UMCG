@@ -37,11 +37,11 @@ macro_rules! debug {
     }};
 }
 
-pub fn run_basic_worker_test() -> i32 {
-    debug!("Running basic worker test...");
-    attempt2::test_basic_worker();
-    0
-}
+// pub fn run_basic_worker_test() -> i32 {
+//     debug!("Running basic worker test...");
+//     attempt2::test_basic_worker();
+//     0
+// }
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
     debug!("Running dynamic task attempt2 test...");
@@ -73,6 +73,8 @@ pub enum ServerError {
     WorkerRegistrationFailed { worker_id: usize, error: i32 },
     InvalidWorkerEvent { worker_id: usize, event: u64 },
     SystemError(std::io::Error),
+    ContextSwitchFailed,
+    QueueFull,
 }
 
 impl std::fmt::Display for ServerError {
@@ -89,6 +91,8 @@ impl std::fmt::Display for ServerError {
                 write!(f, "Invalid event {} from worker {}", event, worker_id)
             }
             Self::SystemError(e) => write!(f, "System error: {}", e),
+            Self::ContextSwitchFailed => write!(f, "Context switch failed"),
+            Self::QueueFull => write!(f, "Queue is full"),
         }
     }
 }
