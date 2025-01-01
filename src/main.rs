@@ -723,7 +723,7 @@ fn run_full_tests() {
     // test_worker_first();
     // test_server_first();
     println!("what the fuck");
-    // run_dynamic_task_attempt2_demo();
+    run_dynamic_task_attempt2_demo();
     run_echo_server_demo();
 
     // println!("Running run_dynamic_task_demo");
