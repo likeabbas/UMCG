@@ -49,6 +49,12 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     0
 }
 
+pub fn run_echo_server_demo() -> i32 {
+    info!("Running echo server demo...");
+    attempt2::run_echo_server_demo();
+    0
+}
+
 fn log_with_timestamp(msg: &str) {
     use std::time::SystemTime;
     let now = SystemTime::now()

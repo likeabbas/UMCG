@@ -1,6 +1,6 @@
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
 
-pub static DEBUG_LOGGING: bool = true;
+pub static DEBUG_LOGGING: bool = false;
 
 macro_rules! info {
     ($($arg:tt)*) => {{

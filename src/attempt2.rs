@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use crossbeam::queue::ArrayQueue;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
 use uuid::Uuid;
@@ -10,6 +10,9 @@ use std::sync::mpsc::{channel, Sender, Receiver, TryRecvError};
 use log::error;
 use crate::{umcg_base, ServerError};
 use crate::umcg_base::{UmcgCmd, UmcgEventType, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
+use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
+use std::os::unix::io::AsRawFd;
 
 macro_rules! info {
     ($($arg:tt)*) => {{
@@ -1157,7 +1160,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     while !task_stats.all_tasks_completed() {
         if start.elapsed() > timeout {
             let (completed, total) = task_stats.get_completion_stats();
-            debug!("Timeout waiting for tasks to complete! ({}/{} completed)",
+            info!("Timeout waiting for tasks to complete! ({}/{} completed)",
                 completed, total);
             done.store(true, Ordering::SeqCst);
             return 1;
@@ -1165,16 +1168,213 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
 
         if start.elapsed().as_secs() % 5 == 0 {
             let (completed, total) = task_stats.get_completion_stats();
-            debug!("Progress: {}/{} tasks completed", completed, total);
+            info!("Progress: {}/{} tasks completed", completed, total);
         }
 
         thread::sleep(Duration::from_millis(100));
     }
 
     let (completed, total) = task_stats.get_completion_stats();
-    debug!("All tasks completed successfully ({}/{})", completed, total);
+    info!("All tasks completed successfully ({}/{})", completed, total);
 
     // Clean shutdown
     done.store(true, Ordering::SeqCst);
     0
+}
+
+struct ServerStats {
+    accept_count: AtomicU64,
+    accept_wait_time: AtomicU64,  // in microseconds
+    processing_time: AtomicU64,   // in microseconds
+    queue_wait_time: AtomicU64,   // in microseconds
+    completed_requests: AtomicU64,
+    current_connections: AtomicU64,
+}
+
+impl ServerStats {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            accept_count: AtomicU64::new(0),
+            accept_wait_time: AtomicU64::new(0),
+            processing_time: AtomicU64::new(0),
+            queue_wait_time: AtomicU64::new(0),
+            completed_requests: AtomicU64::new(0),
+            current_connections: AtomicU64::new(0),
+        })
+    }
+
+    fn print_stats(&self) {
+        let accepts = self.accept_count.load(Ordering::Relaxed);
+        if accepts == 0 { return; }
+
+        println!("=== Performance Statistics ===");
+        println!("Total Accepts: {}", accepts);
+        println!("Current Connections: {}", self.current_connections.load(Ordering::Relaxed));
+        println!("Completed Requests: {}", self.completed_requests.load(Ordering::Relaxed));
+        println!("Average Accept Wait: {}μs",
+                 self.accept_wait_time.load(Ordering::Relaxed) / accepts);
+        println!("Average Processing Time: {}μs",
+                 self.processing_time.load(Ordering::Relaxed) / accepts);
+        println!("Average Queue Wait: {}μs",
+                 self.queue_wait_time.load(Ordering::Relaxed) / accepts);
+        println!("===========================\n");
+    }
+}
+
+pub fn run_echo_server_demo() -> i32 {
+    const WORKER_COUNT: usize = 100;  // 500 workers for handling requests
+    const QUEUE_CAPACITY: usize = 10000; // Allow for plenty of pending requests
+
+    // Create task queue and worker queues
+    let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
+    let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
+    let task_stats = TaskStats::new();
+
+    // Create executor with initial configuration
+    let mut executor = Executor::new(ExecutorConfig {
+        worker_count: WORKER_COUNT,
+        server_count: 1,
+    });
+
+    // Initialize workers first
+    let (states, channels) = executor.initialize_workers();
+
+    // Create done flag for shutdown
+    let done = Arc::new(AtomicBool::new(false));
+    let done_tcp = done.clone(); // Clone for TCP accept loop
+
+    // Create task handle for submitting tasks
+    let task_handle = TaskHandle {
+        task_queue: task_queue.clone(),
+        task_stats: task_stats.clone(),
+    };
+
+    // Initialize the server with all shared resources
+    executor.initialize_first_server_and_setup_workers(
+        states.clone(),
+        channels.clone(),
+        worker_queues.clone(),
+        task_queue.clone(),
+        done.clone(),
+    );
+
+    // Wait for all workers to be registered
+    let mut all_workers_ready = false;
+    while !all_workers_ready {
+        let ready_count = states.values()
+            .filter(|state| {
+                let state = state.lock().unwrap();
+                *state == WorkerStatus::Waiting
+            })
+            .count();
+        all_workers_ready = ready_count == WORKER_COUNT;
+        if !all_workers_ready {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    debug!("All workers registered and ready");
+
+    // Create performance stats
+    let stats = ServerStats::new();
+    let stats_for_accept = stats.clone();
+    let stats_for_monitor = stats.clone();
+
+    // Create TCP listener
+    let listener = TcpListener::bind("0.0.0.0:8080").expect("Failed to bind to port 8080");
+    listener.set_nonblocking(true).expect("Failed to set non-blocking");
+
+    // Submit the TCP accept loop task to a dedicated worker
+    let accept_task_handle = task_handle.clone();
+    task_handle.submit(Box::new(move || {
+        debug!("TCP accept loop starting");
+        let mut accept_start = Instant::now();
+
+        while !done_tcp.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, addr)) => {
+                    let accept_time = accept_start.elapsed().as_micros() as u64;
+                    stats_for_accept.accept_wait_time.fetch_add(accept_time, Ordering::Relaxed);
+                    stats_for_accept.accept_count.fetch_add(1, Ordering::Relaxed);
+                    stats_for_accept.current_connections.fetch_add(1, Ordering::Relaxed);
+
+                    let stats_for_handler = stats_for_accept.clone();
+                    let queued_at = Instant::now();
+
+                    accept_task_handle.submit(Box::new(move || {
+                        let queue_time = queued_at.elapsed().as_micros() as u64;
+                        stats_for_handler.queue_wait_time.fetch_add(queue_time, Ordering::Relaxed);
+
+                        let process_start = Instant::now();
+                        handle_connection(stream);
+                        let process_time = process_start.elapsed().as_micros() as u64;
+
+                        stats_for_handler.processing_time.fetch_add(process_time, Ordering::Relaxed);
+                        stats_for_handler.completed_requests.fetch_add(1, Ordering::Relaxed);
+                        stats_for_handler.current_connections.fetch_sub(1, Ordering::Relaxed);
+                    }));
+
+                    accept_start = Instant::now(); // Reset for next accept timing
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => {
+                    error!("Accept error: {}", e);
+                    break;
+                }
+            }
+        }
+        debug!("TCP accept loop terminated");
+    }));
+
+    println!("HTTP server running on 0.0.0.0:8080");
+
+    // Monitor loop
+    while !done.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_secs(1));
+        let (completed, total) = task_stats.get_completion_stats();
+        stats_for_monitor.print_stats();
+    }
+
+    debug!("Server shutdown complete");
+    0
+}
+
+fn handle_connection(mut stream: TcpStream) {
+    let mut buffer = [0; 1024];
+
+    // Add TCP_NODELAY to reduce latency
+    if let Err(e) = stream.set_nodelay(true) {
+        error!("Failed to set TCP_NODELAY: {}", e);
+    }
+
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_n) => {
+                let response = "HTTP/1.1 200 OK\r\n\
+                               Content-Type: text/plain\r\n\
+                               Content-Length: 13\r\n\
+                               Connection: close\r\n\
+                               \r\n\
+                               Hello, World!\n";
+
+                if let Err(e) = stream.write_all(response.as_bytes()) {
+                    error!("Failed to write to socket: {}", e);
+                    break;
+                }
+                break;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_micros(100)); // Reduced sleep time
+                continue;
+            }
+            Err(e) => {
+                error!("Failed to read from socket: {}", e);
+                break;
+            }
+        }
+    }
+
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
