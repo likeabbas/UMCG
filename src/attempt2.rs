@@ -36,6 +36,7 @@ fn log_with_timestamp(msg: &str) {
              msg);
 }
 
+
 type Task = Box<dyn FnOnce() + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -256,6 +257,82 @@ impl Server {
         }
     }
 
+    fn start_server(self) -> JoinHandle<()> {
+        thread::spawn(move || {
+            debug!("Starting server {}", self.id);
+
+            // Register with UMCG
+            let reg_result = umcg_base::sys_umcg_ctl(
+                0,
+                UmcgCmd::RegisterServer,
+                0,
+                0,
+                None,
+                0
+            );
+            if reg_result != 0 {
+                error!("Server {} registration failed: {}", self.id, reg_result);
+                return;
+            }
+            debug!("Server {}: UMCG registration complete", self.id);
+
+            // Run the event loop
+            if let Err(e) = self.run_server() {
+                error!("Server {} failed: {}", self.id, e);
+            }
+        })
+    }
+
+    fn run_server(&self) -> Result<(), ServerError> {
+        info!("Server {}: Starting up", self.id);
+
+        let reg_result = umcg_base::sys_umcg_ctl(0, UmcgCmd::RegisterServer, 0, 0, None, 0);
+        if reg_result != 0 {
+            return Err(ServerError::RegistrationFailed(reg_result));
+        }
+        info!("Server {}: UMCG registration complete", self.id);
+
+        // Main UMCG event loop - handles both events and task management
+        while !self.done.load(Ordering::Relaxed) {
+            // Try to schedule any pending tasks first
+            debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS BEFORE WAITING !!!!!!!!!!");
+            self.try_schedule_tasks()?;
+
+            let mut events = [0u64; EVENT_BUFFER_SIZE];
+            debug!("!!!!!!!!!! SERVER EVENT LOOP - WAITING FOR EVENTS (with timeout) !!!!!!!!!!");
+            // Add a short timeout (e.g., 100ms) so we don't block forever
+            let ret = umcg_base::sys_umcg_ctl(
+                0,
+                UmcgCmd::Wait,
+                0,
+                100_000_000, // 100ms in nanoseconds
+                Some(&mut events),
+                EVENT_BUFFER_SIZE as i32
+            );
+            debug!("!!!!!!!!!! SERVER EVENT WAIT RETURNED: {} !!!!!!!!!!", ret);
+
+            if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
+                error!("Server {} wait error: {}", self.id, ret);
+                return Err(ServerError::SystemError(std::io::Error::last_os_error()));
+            }
+
+            for &event in events.iter().take_while(|&&e| e != 0) {
+                debug!("!!!!!!!!!! SERVER PROCESSING EVENT: {} !!!!!!!!!!", event);
+                // Use our existing event handler
+                if let Err(e) = self.handle_event(event) {
+                    error!("Server {} event handling error: {}", self.id, e);
+                }
+
+                // Try to schedule tasks after handling each event too
+                // self.try_schedule_tasks()?;
+            }
+        }
+
+        self.shutdown();
+        info!("Server {}: Shutdown complete", self.id);
+        Ok(())
+    }
+
     fn start_initial_server(mut self) -> JoinHandle<()> {
         thread::spawn(move || {
             // Register server with UMCG
@@ -361,33 +438,68 @@ impl Server {
         })
     }
 
+
+    /*
+        let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap();
+            let abs_timeout = now.as_nanos() as u64 + 1_000_000_000;
+     */
     fn run_event_loop(&self) -> Result<(), ServerError> {
         debug!("Server {}: Starting event loop", self.id);
 
+        // Track timeout state
+        const MIN_TIMEOUT_NS: u64 = 100_000;        // 100μs minimum timeout
+        const MAX_TIMEOUT_NS: u64 = 1_000_000_000;  // 1s maximum timeout
+        const BASE_TIMEOUT_NS: u64 = 1_000_000;     // 1ms base timeout
+        let mut current_timeout = BASE_TIMEOUT_NS;
+
         while !self.done.load(Ordering::Relaxed) {
             // Try to schedule any pending tasks first
-            debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS BEFORE WAITING !!!!!!!!!!");
+            let has_pending_tasks = self.manage_tasks.has_pending_tasks();
+            if has_pending_tasks {
+                debug!("Server {}: Attempting to schedule pending tasks", self.id);
+            }
             self.try_schedule_tasks()?;
 
             let mut events = [0u64; 6];
 
-            // Calculate absolute timeout (now + 100ms)
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap();
-            let abs_timeout = now.as_nanos() as u64 + 1_000_000_000;
+            // Calculate timeout - reset to base timeout if we have work, otherwise increase
+            let timeout = if self.worker_queues.pending.len() > 0 || has_pending_tasks {
+                current_timeout = BASE_TIMEOUT_NS;
+                BASE_TIMEOUT_NS
+            } else {
+                // Exponential backoff when idle, capped at MAX_TIMEOUT_NS
+                current_timeout = (current_timeout * 2).min(MAX_TIMEOUT_NS);
+                current_timeout
+            };
 
-            debug!("!!!!!!!!!! SERVER EVENT LOOP - WAITING FOR EVENTS (with timeout) !!!!!!!!!!");
+            // Calculate absolute timeout for syscall
+            let abs_timeout = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64 + timeout;
+
+            // Only debug UMCG wait if we have activity or significant timeout change
+            if has_pending_tasks || timeout != current_timeout {
+                debug!("Server {}: Waiting for events (timeout={}ns, pending_tasks={})",
+                self.id, timeout, has_pending_tasks);
+            }
+
             let ret = umcg_base::sys_umcg_ctl(
                 0,
                 UmcgCmd::Wait,
                 0,
-                abs_timeout,  // Use absolute timeout value
+                abs_timeout,
                 Some(&mut events),
                 6
             );
 
-            debug!("!!!!!!!!!! SERVER EVENT WAIT RETURNED: {} !!!!!!!!!!", ret);
+            // Only debug non-timeout returns or if we have activity
+            if ret != -1 || has_pending_tasks {
+                debug!("Server {}: Wait returned {} (timeout={})",
+                self.id, ret, ret == -1 && unsafe { *libc::__errno_location() } == libc::ETIMEDOUT);
+            }
 
             if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
                 error!("Server {} wait error: {}", self.id, ret);
@@ -396,15 +508,17 @@ impl Server {
 
             // Process any events we received
             for &event in events.iter().take_while(|&&e| e != 0) {
-                debug!("!!!!!!!!!! SERVER PROCESSING EVENT: {} !!!!!!!!!!", event);
+                debug!("Server {}: Processing event {}", self.id, event);
                 if let Err(e) = self.handle_event(event) {
                     error!("Server {} event handling error: {}", self.id, e);
                 }
 
-                debug!("!!!!!!!!!! SERVER EVENT HANDLING COMPLETE - Queue stats - Pending: {}, Running: {}, Preempted: {} !!!!!!!!!!",
-                    self.worker_queues.pending.len(),
-                    self.worker_queues.running.len(),
-                    self.worker_queues.preempted.len());
+                // Only debug queue stats after event handling if we processed an event
+                debug!("Server {} queues - Pending: {}, Running: {}, Preempted: {}",
+                self.id,
+                self.worker_queues.pending.len(),
+                self.worker_queues.running.len(),
+                self.worker_queues.preempted.len());
             }
         }
 
@@ -704,7 +818,10 @@ impl Executor {
     pub fn initialize_servers(
         &mut self,
         states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
-        channels: Arc<HashMap<u64, Sender<WorkerTask>>>
+        channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
+        task_queue: Arc<dyn ManageTask>,
+        worker_queues: Arc<WorkerQueues>,
+        done: Arc<AtomicBool>
     ) {
         // Skip server 0 as it's already initialized
         for server_id in 1..self.config.server_count {
@@ -713,8 +830,11 @@ impl Executor {
             // Create new server
             let server = Server::new(
                 server_id,
-                server_id, // Using server_id as cpu_id since we don't care about CPU affinity
-                self.executor.clone()
+                states.clone(),
+                channels.clone(),
+                task_queue.clone(),
+                worker_queues.clone(),
+                done.clone(),
             );
 
             // Start the server (just UMCG registration and event loop)
@@ -790,7 +910,9 @@ trait RemoveTask: Send + Sync {
     fn remove_task(&self) -> Option<Task>;
 }
 
-trait ManageTask: AddTask + RemoveTask + Send + Sync {}
+trait ManageTask: AddTask + RemoveTask + Send + Sync {
+    fn has_pending_tasks(&self) -> bool;
+}
 
 impl AddTask for TaskQueue {
     fn add_task(&self, task: Task) -> Result<(), Task> {
@@ -804,7 +926,11 @@ impl RemoveTask for TaskQueue {
     }
 }
 
-impl ManageTask for TaskQueue {}
+impl ManageTask for TaskQueue {
+    fn has_pending_tasks(&self) -> bool {
+        self.queue.len() > 0
+    }
+}
 
 enum TaskState {
     Pending(Task),
@@ -931,6 +1057,7 @@ pub fn test_basic_worker() {
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
     const WORKER_COUNT: usize = 3;
+    const SERVER_COUNT: usize = 3;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100;
 
     // Create task queue and worker queues
@@ -941,7 +1068,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     // Create executor with initial configuration
     let mut executor = Executor::new(ExecutorConfig {
         worker_count: WORKER_COUNT,
-        server_count: 1,
+        server_count: SERVER_COUNT,  // Using multiple servers
     });
 
     // Initialize workers first
@@ -958,20 +1085,44 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
 
     // Initialize first server with all shared resources
     executor.initialize_first_server_and_setup_workers(
-        states,
-        channels,
-        worker_queues,
+        states.clone(),  // Clone because we'll use it again
+        channels.clone(), // Clone because we'll use it again
+        worker_queues.clone(), // Clone because we'll use it again
         task_queue.clone(),
         done.clone(),
     );
+
+    // Wait for all workers to be registered
+    // We know there should be WORKER_COUNT workers in the waiting state
+    let mut all_workers_ready = false;
+    while !all_workers_ready {
+        let ready_count = states.values()
+            .filter(|state| {
+                let state = state.lock().unwrap();
+                *state == WorkerStatus::Waiting
+            })
+            .count();
+        all_workers_ready = ready_count == WORKER_COUNT;
+        if !all_workers_ready {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    debug!("All workers registered, starting additional servers");
+
+    // Initialize additional servers
+    // executor.initialize_servers(
+    //     states,
+    //     channels,
+    //     task_queue.clone(),
+    //     worker_queues,
+    //     done.clone()
+    // );
 
     // Give time for initialization
     thread::sleep(Duration::from_millis(100));
 
     debug!("Submitting initial tasks...");
 
-    // Submit initial tasks that will spawn child tasks
-    // Submit initial tasks that will spawn child tasks
     // Submit initial tasks that will spawn child tasks
     for i in 0..6 {
         let parent_task_handle = task_handle.clone();
