@@ -17,7 +17,7 @@
   "ManifestPassthrough": {
     "consoles": ["+serial", "+net"],
     "load_klib": ["umcg"],
-    "log_level": "info",
+    "log_level": "debug",
     "exec_wait_for_ip4_secs": "30",
     "en1": {
       "dhcp": "true",

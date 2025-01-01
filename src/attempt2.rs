@@ -132,7 +132,7 @@ impl Worker {
         };
 
         if reg_result != 0 {
-            error!("Worker {} UMCG registration failed: {}", self.id, reg_result);
+            debug!("Worker {} UMCG registration failed: {}", self.id, reg_result);
             return;
         }
 
@@ -160,7 +160,7 @@ impl Worker {
                     };
 
                     if wait_result != 0 {
-                        error!("Worker {} UMCG wait failed: {}", self.id, wait_result);
+                        debug!("Worker {} UMCG wait failed: {}", self.id, wait_result);
                         break;
                     }
                 }
@@ -183,7 +183,7 @@ impl Worker {
                     };
 
                     if wait_result != 0 {
-                        error!("Worker {} UMCG wait failed: {}", self.id, wait_result);
+                        debug!("Worker {} UMCG wait failed: {}", self.id, wait_result);
                         break;
                     }
                 }
@@ -209,7 +209,7 @@ impl Worker {
         };
 
         if unreg_result != 0 {
-            error!("Worker {} UMCG unregistration failed: {}", self.id, unreg_result);
+            debug!("Worker {} UMCG unregistration failed: {}", self.id, unreg_result);
         }
 
         debug!("Worker {} shutdown complete", self.id);
@@ -293,7 +293,6 @@ struct Server {
     channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
     manage_tasks: Arc<dyn ManageTask>,
     worker_queues: Arc<WorkerQueues>,
-    pending_switches: Arc<ArrayQueue<PendingContextSwitch>>,
     metrics: Arc<ContextSwitchMetrics>,
     done: Arc<AtomicBool>
 }
@@ -305,7 +304,6 @@ impl Server {
         channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
         manage_tasks: Arc<dyn ManageTask>,
         worker_queues: Arc<WorkerQueues>,
-        pending_switches: Arc<ArrayQueue<PendingContextSwitch>>,
         done: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -314,70 +312,10 @@ impl Server {
             channels,
             manage_tasks,
             worker_queues,
-            pending_switches,
             metrics: Arc::new(ContextSwitchMetrics::new()),
             done,
         }
     }
-
-    fn initiate_context_switch(&self, worker_id: u64, timeout: u64) -> Result<(), ServerError> {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
-        let abs_timeout = now.as_nanos() as u64 + timeout;
-
-        // Create event buffer for this context switch
-        let mut events = [0u64; EVENT_BUFFER_SIZE];
-
-        // Initiate non-blocking context switch with event buffer
-        let switch_ret = unsafe {
-            libc::syscall(
-                SYS_UMCG_CTL as i64,
-                0,
-                UmcgCmd::CtxSwitch as i64,
-                (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,
-                abs_timeout,
-                events.as_mut_ptr() as i64,
-                EVENT_BUFFER_SIZE as i64
-            )
-        };
-
-        if switch_ret == 0 {
-            // Create and queue pending switch with its events
-            let pending = PendingContextSwitch {
-                worker_id,
-                events,
-                start_time: Instant::now(),
-                timeout,
-            };
-
-            match self.pending_switches.push(pending) {
-                Ok(_) => {
-                    debug!("Server {}: Added pending switch for worker {}", self.id, worker_id);
-                    Ok(())
-                }
-                Err(_) => {
-                    error!("Server {}: Failed to queue pending switch for worker {}",
-                       self.id, worker_id);
-                    Err(ServerError::QueueFull)
-                }
-            }
-        } else {
-            let errno = unsafe { *libc::__errno_location() };
-            if errno == libc::ETIMEDOUT {
-                // Timeout is expected, we should check events later
-                self.metrics.timeout_count.fetch_add(1, Ordering::Relaxed);
-                // Return Ok since timeout isn't a failure
-                Ok(())
-            } else {
-                // Real failure
-                error!("Server {}: Context switch syscall failed for worker {} with errno {}",
-                   self.id, worker_id, errno);
-                Err(ServerError::ContextSwitchFailed)
-            }
-        }
-    }
-
 
     fn start_server(self) -> JoinHandle<()> {
         thread::spawn(move || {
@@ -393,14 +331,14 @@ impl Server {
                 0
             );
             if reg_result != 0 {
-                error!("Server {} registration failed: {}", self.id, reg_result);
+                debug!("Server {} registration failed: {}", self.id, reg_result);
                 return;
             }
             debug!("Server {}: UMCG registration complete", self.id);
 
             // Run the event loop
-            if let Err(e) = self.run_server() {
-                error!("Server {} failed: {}", self.id, e);
+            if let Err(e) = self.run_event_loop() {
+                debug!("Server {} failed: {}", self.id, e);
             }
         })
     }
@@ -434,7 +372,7 @@ impl Server {
             debug!("!!!!!!!!!! SERVER EVENT WAIT RETURNED: {} !!!!!!!!!!", ret);
 
             if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
-                error!("Server {} wait error: {}", self.id, ret);
+                debug!("Server {} wait error: {}", self.id, ret);
                 return Err(ServerError::SystemError(std::io::Error::last_os_error()));
             }
 
@@ -442,7 +380,7 @@ impl Server {
                 debug!("!!!!!!!!!! SERVER PROCESSING EVENT: {} !!!!!!!!!!", event);
                 // Use our existing event handler
                 if let Err(e) = self.handle_event(event) {
-                    error!("Server {} event handling error: {}", self.id, e);
+                    debug!("Server {} event handling error: {}", self.id, e);
                 }
 
                 // Try to schedule tasks after handling each event too
@@ -488,10 +426,11 @@ impl Server {
             while registered_workers.len() < self.states.len() {
                 let ret = umcg_base::umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
                 if ret != 0 {
-                    error!("Server {}: Wait failed during worker registration: {}", self.id, ret);
+                    debug!("Server {}: Wait failed during worker registration: {}", self.id, ret);
                     continue;
                 }
 
+                debug!("Server {}: before event declaration", self.id);
                 let event = events[0];
                 let event_type = event & UMCG_WORKER_EVENT_MASK;
                 let worker_tid = (event >> UMCG_WORKER_ID_SHIFT) as i32;  // Raw tid for context switch
@@ -532,7 +471,7 @@ impl Server {
                             let mut status = status.lock().unwrap();
                             *status = WorkerStatus::Waiting;
                             if self.worker_queues.pending.push(worker_id).is_err() {
-                                error!("Server {}: Failed to add worker {} to pending queue",
+                                debug!("Server {}: Failed to add worker {} to pending queue",
                                 self.id, worker_id);
                             }
                             debug!("Server {}: Worker {} status set to waiting and added to pending queue",
@@ -540,10 +479,10 @@ impl Server {
 
                             registered_workers.insert(worker_id);
                         } else {
-                            error!("Server {}: No state found for worker ID {}", self.id, worker_id);
+                            debug!("Server {}: No state found for worker ID {}", self.id, worker_id);
                         }
                     } else {
-                        error!("Server {}: Context switch failed for worker tid {} (id: {}): {}",
+                        debug!("Server {}: Context switch failed for worker tid {} (id: {}): {}",
                         self.id, worker_tid, worker_id, switch_ret);
                     }
                 } else {
@@ -624,7 +563,7 @@ impl Server {
             }
 
             if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
-                error!("Server {} wait error: {}", self.id, ret);
+                debug!("Server {} wait error: {}", self.id, ret);
                 return Err(ServerError::SystemError(std::io::Error::last_os_error()));
             }
 
@@ -632,7 +571,7 @@ impl Server {
             for &event in events.iter().take_while(|&&e| e != 0) {
                 debug!("Server {}: Processing event {}", self.id, event);
                 if let Err(e) = self.handle_event(event) {
-                    error!("Server {} event handling error: {}", self.id, e);
+                    debug!("Server {} event handling error: {}", self.id, e);
                 }
 
                 // Only debug queue stats after event handling if we processed an event
@@ -681,7 +620,7 @@ impl Server {
 
                                     // Add to running queue
                                     if self.worker_queues.running.push(worker_id).is_err() {
-                                        error!("Server {}: Failed to add worker {} to running queue",
+                                        debug!("Server {}: Failed to add worker {} to running queue",
                                         self.id, worker_id);
                                     }
                                     debug!("Server {}: Updated worker {} status to Running", self.id, worker_id);
@@ -722,7 +661,7 @@ impl Server {
                             self.id, worker_id);
                             // No tasks available, put worker back in pending queue
                             if self.worker_queues.pending.push(worker_id).is_err() {
-                                error!("Server {}: Failed to return worker {} to pending queue",
+                                debug!("Server {}: Failed to return worker {} to pending queue",
                                 self.id, worker_id);
                             }
                         }
@@ -731,7 +670,7 @@ impl Server {
                     debug!("Server {}: Worker {} not in waiting state", self.id, worker_id);
                     // Worker not in waiting state, put back in pending queue
                     if self.worker_queues.pending.push(worker_id).is_err() {
-                        error!("Server {}: Failed to return worker {} to pending queue",
+                        debug!("Server {}: Failed to return worker {} to pending queue",
                         self.id, worker_id);
                     }
                 }
@@ -897,7 +836,7 @@ impl Server {
         for (worker_id, tx) in self.channels.iter() {
             debug!("Server {}: Sending shutdown to worker {}", self.id, worker_id);
             if tx.send(WorkerTask::Shutdown).is_err() {
-                error!("Server {}: Failed to send shutdown to worker {}", self.id, worker_id);
+                debug!("Server {}: Failed to send shutdown to worker {}", self.id, worker_id);
             }
         }
     }
@@ -923,7 +862,6 @@ impl Executor {
         worker_queues: Arc<WorkerQueues>,
         manage_tasks: Arc<dyn ManageTask>,
         done: Arc<AtomicBool>,
-        pending_switches: Arc<ArrayQueue<PendingContextSwitch>>,
     ) {
         let server = Server::new(
             0, // First server has id 0
@@ -931,7 +869,6 @@ impl Executor {
             channels,
             manage_tasks,
             worker_queues,
-            pending_switches,
             done,
         );
 
@@ -945,7 +882,6 @@ impl Executor {
         channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
         task_queue: Arc<dyn ManageTask>,
         worker_queues: Arc<WorkerQueues>,
-        pending_switches: Arc<ArrayQueue<PendingContextSwitch>>,
         done: Arc<AtomicBool>
     ) {
         // Skip server 0 as it's already initialized
@@ -959,7 +895,6 @@ impl Executor {
                 channels.clone(),
                 task_queue.clone(),
                 worker_queues.clone(),
-                pending_switches.clone(),
                 done.clone(),
             );
 
@@ -1125,7 +1060,7 @@ impl TaskHandle {
         });
 
         if let Err(_) = self.task_queue.add_task(wrapped_task) {
-            error!("Failed to add task to queue");
+            debug!("Failed to add task to queue");
         }
     }
 }
@@ -1165,7 +1100,7 @@ impl TaskHandle {
 //         thread::sleep(Duration::from_secs(1));
 //         debug!("!!!! Test task: Completed !!!!");
 //     })) {
-//         error!("Failed to add task to queue");
+//         debug!("Failed to add task to queue");
 //         return;
 //     }
 //
@@ -1182,9 +1117,9 @@ impl TaskHandle {
 // }
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
-    const WORKER_COUNT: usize = 3;
+    const WORKER_COUNT: usize = 30;
     const SERVER_COUNT: usize = 3;  // Changed this to test multiple servers
-    const QUEUE_CAPACITY: usize = 100;
+    const QUEUE_CAPACITY: usize = 10000;
 
     // Create task queue and worker queues
     let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
@@ -1209,8 +1144,6 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
         task_stats: task_stats.clone(),
     };
 
-    let pending_switches = Arc::new(ArrayQueue::new(WORKER_COUNT));
-
     // Initialize first server with all shared resources
     executor.initialize_first_server_and_setup_workers(
         states.clone(),  // Clone because we'll use it again
@@ -1218,7 +1151,6 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
         worker_queues.clone(), // Clone because we'll use it again
         task_queue.clone(),
         done.clone(),
-        pending_switches.clone()
     );
 
     // Wait for all workers to be registered
@@ -1239,13 +1171,13 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     debug!("All workers registered, starting additional servers");
 
     // Initialize additional servers
-    // executor.initialize_servers(
-    //     states,
-    //     channels,
-    //     task_queue.clone(),
-    //     worker_queues,
-    //     done.clone()
-    // );
+    executor.initialize_servers(
+        states,
+        channels,
+        task_queue.clone(),
+        worker_queues,
+        done.clone()
+    );
 
     // Give time for initialization
     thread::sleep(Duration::from_millis(100));
@@ -1253,7 +1185,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     debug!("Submitting initial tasks...");
 
     // Submit initial tasks that will spawn child tasks
-    for i in 0..6 {
+    for i in 0..30 {
         let parent_task_handle = task_handle.clone();
         let parent_id = i;
 
@@ -1359,7 +1291,7 @@ pub fn run_echo_server_demo() -> i32 {
     // Create executor with initial configuration
     let mut executor = Executor::new(ExecutorConfig {
         worker_count: WORKER_COUNT,
-        server_count: 1,
+        server_count: 2,
     });
 
     // Initialize workers first
@@ -1374,7 +1306,6 @@ pub fn run_echo_server_demo() -> i32 {
         task_queue: task_queue.clone(),
         task_stats: task_stats.clone(),
     };
-    let pending_switches = Arc::new(ArrayQueue::new(WORKER_COUNT));
 
     // Initialize the server with all shared resources
     executor.initialize_first_server_and_setup_workers(
@@ -1383,7 +1314,6 @@ pub fn run_echo_server_demo() -> i32 {
         worker_queues.clone(),
         task_queue.clone(),
         done.clone(),
-        pending_switches.clone(),
     );
 
     // Wait for all workers to be registered
@@ -1448,7 +1378,7 @@ pub fn run_echo_server_demo() -> i32 {
                     thread::sleep(Duration::from_millis(1));
                 }
                 Err(e) => {
-                    error!("Accept error: {}", e);
+                    debug!("Accept error: {}", e);
                     break;
                 }
             }
@@ -1474,7 +1404,7 @@ fn handle_connection(mut stream: TcpStream) {
 
     // Add TCP_NODELAY to reduce latency
     if let Err(e) = stream.set_nodelay(true) {
-        error!("Failed to set TCP_NODELAY: {}", e);
+        debug!("Failed to set TCP_NODELAY: {}", e);
     }
 
     loop {
@@ -1489,7 +1419,7 @@ fn handle_connection(mut stream: TcpStream) {
                                Hello, World!\n";
 
                 if let Err(e) = stream.write_all(response.as_bytes()) {
-                    error!("Failed to write to socket: {}", e);
+                    debug!("Failed to write to socket: {}", e);
                     break;
                 }
                 break;
@@ -1499,7 +1429,7 @@ fn handle_connection(mut stream: TcpStream) {
                 continue;
             }
             Err(e) => {
-                error!("Failed to read from socket: {}", e);
+                debug!("Failed to read from socket: {}", e);
                 break;
             }
         }
