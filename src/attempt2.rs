@@ -568,202 +568,177 @@ impl Server {
             let abs_timeout = now.as_nanos() as u64 + 1_000_000_000;
      */
     fn run_event_loop(&self) -> Result<(), ServerError> {
-        let mut wait_events = [0u64; EVENT_BUFFER_SIZE];
+        debug!("Server {}: Starting event loop", self.id);
+
+        // Track timeout state
+        const MIN_TIMEOUT_NS: u64 = 100_000;        // 100μs minimum timeout
+        const MAX_TIMEOUT_NS: u64 = 1_000_000_000;  // 1s maximum timeout
+        const BASE_TIMEOUT_NS: u64 = 1_000_000;     // 1ms base timeout
+        let mut current_timeout = BASE_TIMEOUT_NS;
 
         while !self.done.load(Ordering::Relaxed) {
-            // Try to schedule tasks first
+            // Try to schedule any pending tasks first
+            let has_pending_tasks = self.manage_tasks.has_pending_tasks();
+            if has_pending_tasks {
+                debug!("Server {}: Attempting to schedule pending tasks", self.id);
+            }
             self.try_schedule_tasks()?;
 
-            // Calculate timeout based on pending switches
-            let timeout = if self.pending_switches.is_empty() {
-                100_000  // 100μs when no pending switches
+            let mut events = [0u64; 6];
+
+            // Calculate timeout - reset to base timeout if we have work, otherwise increase
+            let timeout = if self.worker_queues.pending.len() > 0 || has_pending_tasks {
+                current_timeout = BASE_TIMEOUT_NS;
+                BASE_TIMEOUT_NS
             } else {
-                1_000    // 1μs when handling switches
+                // Exponential backoff when idle, capped at MAX_TIMEOUT_NS
+                current_timeout = (current_timeout * 2).min(MAX_TIMEOUT_NS);
+                current_timeout
             };
 
-            let now = SystemTime::now()
+            // Calculate absolute timeout for syscall
+            let abs_timeout = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap();
-            let abs_timeout = now.as_nanos() as u64 + timeout;
+                .unwrap()
+                .as_nanos() as u64 + timeout;
 
-            // Wait for new events
+            // Only debug UMCG wait if we have activity or significant timeout change
+            if has_pending_tasks || timeout != current_timeout {
+                debug!("Server {}: Waiting for events (timeout={}ns, pending_tasks={})",
+                self.id, timeout, has_pending_tasks);
+            }
+
             let ret = umcg_base::sys_umcg_ctl(
                 0,
                 UmcgCmd::Wait,
                 0,
                 abs_timeout,
-                Some(&mut wait_events),
-                EVENT_BUFFER_SIZE as i32
+                Some(&mut events),
+                6
             );
 
-            // Check return value and errno
-            if ret == -1 {
-                let errno = unsafe { *libc::__errno_location() };
-                match errno {
-                    libc::ETIMEDOUT => {
-                        debug!("Server {}: Wait timed out", self.id);
-                    }
-                    libc::EINTR => {
-                        // Interrupted, try again
-                        debug!("Server {}: Wait interrupted", self.id);
-                        continue;
-                    }
-                    _ => {
-                        error!("Server {}: Wait failed with errno {}", self.id, errno);
-                        return Err(ServerError::SystemError(std::io::Error::from_raw_os_error(errno)));
-                    }
-                }
-            } else if ret == 0 {
-                // Process any Wait events
-                for &event in wait_events.iter().take_while(|&&e| e != 0) {
-                    self.handle_event(event)?;
-                }
+            // Only debug non-timeout returns or if we have activity
+            if ret != -1 || has_pending_tasks {
+                debug!("Server {}: Wait returned {} (timeout={})",
+                self.id, ret, ret == -1 && unsafe { *libc::__errno_location() } == libc::ETIMEDOUT);
             }
 
-            // Process any pending context switches that completed
-            let start_process = Instant::now();
-            while let Some(switch) = self.pending_switches.pop() {
-                let elapsed = start_process.elapsed();
-
-                // Don't spend more than 50μs processing switches
-                if elapsed > Duration::from_micros(50) {
-                    // Put switch back and process more next iteration
-                    if self.pending_switches.push(switch).is_err() {
-                        error!("Failed to requeue pending switch");
-                    }
-                    break;
-                }
-
-                if Instant::now().duration_since(switch.start_time).as_nanos() as u64 > switch.timeout {
-                    // Context switch timed out - just update metrics
-                    self.metrics.timeout_count.fetch_add(1, Ordering::Relaxed);
-                    debug!("Server {}: Context switch timed out for worker {}",
-                       self.id, switch.worker_id);
-
-                    // The worker's state will be updated when we receive an event
-                    // or when scheduling the next task
-                } else {
-                    debug!("Server {}: Processing context switch events for worker {}",
-                       self.id, switch.worker_id);
-
-                    // Process events from the context switch
-                    for &event in switch.events.iter().take_while(|&&e| e != 0) {
-                        self.handle_event(event)?;
-                    }
-                    self.metrics.success_count.fetch_add(1, Ordering::Relaxed);
-                }
+            if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
+                error!("Server {} wait error: {}", self.id, ret);
+                return Err(ServerError::SystemError(std::io::Error::last_os_error()));
             }
 
-            // Small sleep if no work to avoid spinning
-            if self.pending_switches.is_empty() && self.worker_queues.pending.is_empty() {
-                std::thread::sleep(std::time::Duration::from_micros(100));
+            // Process any events we received
+            for &event in events.iter().take_while(|&&e| e != 0) {
+                debug!("Server {}: Processing event {}", self.id, event);
+                if let Err(e) = self.handle_event(event) {
+                    error!("Server {} event handling error: {}", self.id, e);
+                }
+
+                // Only debug queue stats after event handling if we processed an event
+                debug!("Server {} queues - Pending: {}, Running: {}, Preempted: {}",
+                self.id,
+                self.worker_queues.pending.len(),
+                self.worker_queues.running.len(),
+                self.worker_queues.preempted.len());
             }
         }
 
+        debug!("Server {}: Event loop terminated", self.id);
         Ok(())
     }
 
 
     fn try_schedule_tasks(&self) -> Result<(), ServerError> {
-        let metrics = &self.metrics;
-        let mut scheduled = 0;
+        debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS TO SCHEDULE !!!!!!!!!!");
+        debug!("!!!! TRY_SCHEDULE: Checking pending queue size: {} !!!!",
+           self.worker_queues.pending.len());
+        debug!("!!!! TRY_SCHEDULE: Checking running queue size: {} !!!!",
+           self.worker_queues.running.len());
 
-        while let Some(worker_id) = self.worker_queues.pending.pop() {
-            debug!("Server {}: Popped worker {} from pending queue", self.id, worker_id);
+        // Try to get a pending worker from the queue
+        if let Some(worker_id) = self.worker_queues.pending.pop() {
+            debug!("Server {}: Found pending worker {}", self.id, worker_id);
 
-            // Check if worker already has a task
+            // Verify worker is actually in waiting state
             if let Some(status) = self.states.get(&worker_id) {
                 let status = status.lock().unwrap();
-                if *status == WorkerStatus::Running {
-                    debug!("Server {}: Worker {} already running but was in pending queue - discarding",
-                       self.id, worker_id);
-                    // DO NOT put back in pending - it's running!
-                    continue;
-                }
-            }
+                debug!("Server {}: Worker {} status is {:?}", self.id, worker_id, *status);
 
-            if let Some(task) = self.manage_tasks.remove_task() {
-                debug!("Server {}: Found new task for worker {}", self.id, worker_id);
+                if *status == WorkerStatus::Waiting {
+                    // Try to get a task
+                    debug!("Server {}: Attempting to get task from queue", self.id);
+                    match self.manage_tasks.remove_task() {
+                        Some(task) => {
+                            debug!("!!!! TRY_SCHEDULE: Found task for worker {} !!!!", worker_id);
+                            debug!("Server {}: Found task for worker {}", self.id, worker_id);
+                            if let Some(tx) = self.channels.get(&worker_id) {
+                                // Update status and move to running queue
+                                drop(status); // Release the lock before updating
+                                if let Some(status) = self.states.get(&worker_id) {
+                                    let mut status = status.lock().unwrap();
+                                    *status = WorkerStatus::Running;
 
-                if let Some(tx) = self.channels.get(&worker_id) {
-                    // Update worker status and queues atomically
-                    if let Some(status) = self.states.get(&worker_id) {
-                        let mut status = status.lock().unwrap();
-                        debug!("Server {}: Transitioning worker {} from {:?} to Running",
-                           self.id, worker_id, *status);
-                        *status = WorkerStatus::Running;
-
-                        // Add to running queue
-                        if self.worker_queues.running.push(worker_id).is_ok() {
-                            debug!("Server {}: Added worker {} to running queue", self.id, worker_id);
-
-                            // Send task to worker
-                            if tx.send(WorkerTask::Function(task)).is_ok() {
-                                let timeout = metrics.update_timeout();
-                                match self.initiate_context_switch(worker_id, timeout) {
-                                    Ok(_) => {
-                                        scheduled += 1;
-                                        debug!("Server {}: Successfully initiated context switch for worker {}",
-                                           self.id, worker_id);
+                                    // Add to running queue
+                                    if self.worker_queues.running.push(worker_id).is_err() {
+                                        error!("Server {}: Failed to add worker {} to running queue",
+                                        self.id, worker_id);
                                     }
-                                    Err(ServerError::QueueFull) => {
-                                        // Keep state as is, we'll retry the context switch
-                                        debug!("Server {}: Context switch queue full for worker {}, will retry",
-                                           self.id, worker_id);
-                                    }
-                                    Err(ServerError::ContextSwitchFailed) => {
-                                        // Roll back on actual failures
-                                        error!("Server {}: Context switch failed for worker {}, rolling back",
-                                           self.id, worker_id);
-                                        *status = WorkerStatus::Waiting;
-                                        let _ = self.worker_queues.running.pop();
-                                        if self.worker_queues.pending.push(worker_id).is_err() {
-                                            error!("Server {}: Failed to return worker {} to pending queue after failure",
-                                               self.id, worker_id);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Server {}: Unexpected error during context switch for worker {}: {:?}",
-                                           self.id, worker_id, e);
-                                        *status = WorkerStatus::Waiting;
-                                        let _ = self.worker_queues.running.pop();
-                                        if self.worker_queues.pending.push(worker_id).is_err() {
-                                            error!("Server {}: Failed to return worker {} to pending queue after error",
-                                               self.id, worker_id);
-                                        }
-                                    }
+                                    debug!("Server {}: Updated worker {} status to Running", self.id, worker_id);
                                 }
-                            } else {
-                                error!("Server {}: Failed to send task to worker {}", self.id, worker_id);
-                                // Clean up on send failure
-                                *status = WorkerStatus::Waiting;
-                                let _ = self.worker_queues.running.pop();
-                                if self.worker_queues.pending.push(worker_id).is_err() {
-                                    error!("Server {}: Failed to return worker {} to pending queue after send failure",
-                                       self.id, worker_id);
+
+                                // Send task to worker
+                                if tx.send(WorkerTask::Function(task)).is_ok() {
+                                    debug!("Server {}: Sent task to worker {}", self.id, worker_id);
+
+                                    // Context switch to the worker to let it start the task
+                                    let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
+                                    debug!("Server {}: Context switching to worker {} to start task", self.id, worker_id);
+                                    let switch_ret = unsafe {
+                                        libc::syscall(
+                                            SYS_UMCG_CTL as i64,
+                                            0,
+                                            UmcgCmd::CtxSwitch as i64,
+                                            (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,
+                                            0,
+                                            switch_events.as_mut_ptr() as i64,
+                                            EVENT_BUFFER_SIZE as i64
+                                        )
+                                    };
+                                    debug!("Server {}: Context switch returned {} for worker {}",
+                                    self.id, switch_ret, worker_id);
+
+                                    // Process any events from the context switch
+                                    for &event in switch_events.iter().take_while(|&&e| e != 0) {
+                                        debug!("Server {}: Got event {} from context switch", self.id, event);
+                                        self.handle_event(event)?;
+                                    }
                                 }
                             }
-                        } else {
-                            error!("Server {}: Failed to add worker {} to running queue",
-                               self.id, worker_id);
-                            *status = WorkerStatus::Waiting;
+                        }
+                        None => {
+                            debug!("!!!! TRY_SCHEDULE: No tasks available for worker {} !!!!", worker_id);
+                            debug!("Server {}: No tasks available, returning worker {} to pending queue",
+                            self.id, worker_id);
+                            // No tasks available, put worker back in pending queue
                             if self.worker_queues.pending.push(worker_id).is_err() {
                                 error!("Server {}: Failed to return worker {} to pending queue",
-                                   self.id, worker_id);
+                                self.id, worker_id);
                             }
                         }
                     }
+                } else {
+                    debug!("Server {}: Worker {} not in waiting state", self.id, worker_id);
+                    // Worker not in waiting state, put back in pending queue
+                    if self.worker_queues.pending.push(worker_id).is_err() {
+                        error!("Server {}: Failed to return worker {} to pending queue",
+                        self.id, worker_id);
+                    }
                 }
-            } else {
-                debug!("Server {}: No more tasks available, returning worker {} to pending queue",
-                   self.id, worker_id);
-                if self.worker_queues.pending.push(worker_id).is_err() {
-                    error!("Failed to return worker {} to pending queue", worker_id);
-                }
-                break;
             }
+        } else {
+            debug!("Server {}: No pending workers available", self.id);
         }
-
         Ok(())
     }
 
@@ -785,9 +760,9 @@ impl Server {
                         debug!("Server {}: Processing BLOCK for worker {} in state {:?}",
                         self.id, worker_id, *status);
                         if *status == WorkerStatus::Running {
-                            debug!("Server {}: Transitioning worker {} from Running to Blocked",
-                            self.id, worker_id);
                             *status = WorkerStatus::Blocked;
+                            debug!("Server {}: Updated worker {} status from Running to Blocked",
+                            self.id, worker_id);
                         }
                         status.clone()
                     } else {
@@ -796,8 +771,9 @@ impl Server {
                         return Ok(());
                     }
                 };
-                // Worker stays in running queue while blocked - this is important as it's still
-                // occupying a server's resources even though it's blocked
+                // Worker stays in running queue while blocked
+                debug!("!!!! EVENT_HANDLER: Completed processing event type {} for worker {} !!!!",
+                event_type, worker_id);
             },
 
             e if e == UmcgEventType::Wake as u64 => {
@@ -816,40 +792,51 @@ impl Server {
 
                 match current_status {
                     WorkerStatus::Blocked => {
-                        debug!("Server {}: Worker {} woke up from blocked state",
+                        debug!("Server {}: Worker {} woke up from blocked state, resuming task",
                         self.id, worker_id);
 
                         // Update status under a short lock
                         if let Some(status) = self.states.get(&worker_id) {
                             let mut status = status.lock().unwrap();
-                            debug!("Server {}: Transitioning worker {} from Blocked to Running",
-                            self.id, worker_id);
                             *status = WorkerStatus::Running;
-                        }
-
-                        // Remove from running queue (was left there while blocked)
-                        // and move to pending for rescheduling
-                        let _ = self.worker_queues.running.pop();
-                        debug!("Server {}: Removed worker {} from running queue", self.id, worker_id);
-
-                        if self.worker_queues.pending.push(worker_id).is_ok() {
-                            debug!("Server {}: Added worker {} to pending queue after wake",
-                            self.id, worker_id);
-                        } else {
-                            error!("Server {}: Failed to add worker {} to pending queue after wake",
+                            debug!("Server {}: Updated worker {} status from Blocked to Running",
                             self.id, worker_id);
                         }
 
-                        // Initiate context switch with updated timeout
-                        let timeout = self.metrics.update_timeout();
-                        self.initiate_context_switch(worker_id, timeout)?;
+                        // Do context switch after releasing lock
+                        debug!("Server {}: Context switching to unblocked worker {} to resume task",
+                        self.id, worker_id);
+                        let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
+                        let switch_ret = unsafe {
+                            libc::syscall(
+                                SYS_UMCG_CTL as i64,
+                                0,
+                                UmcgCmd::CtxSwitch as i64,
+                                (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,
+                                0,
+                                switch_events.as_mut_ptr() as i64,
+                                EVENT_BUFFER_SIZE as i64
+                            )
+                        };
+                        debug!("Server {}: Context switch for unblocked worker {} returned {}",
+                        self.id, worker_id, switch_ret);
+
+                        // Process any events from the context switch
+                        for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
+                            debug!("Server {}: Got event {} from unblock context switch",
+                            self.id, switch_event);
+                            self.handle_event(switch_event)?;
+                        }
                     },
                     _ => debug!("Server {}: Unexpected WAKE for worker {} in state {:?}",
                     self.id, worker_id, current_status),
                 }
+                debug!("!!!! EVENT_HANDLER: Completed processing event type {} for worker {} !!!!",
+                event_type, worker_id);
             },
 
             e if e == UmcgEventType::Wait as u64 => {
+                debug!("!!!!!!!!!! EXPLICIT WAIT EVENT - THIS SHOULD BE RARE !!!!!!!!!!");
                 debug!("Server {}: Got explicit WAIT from worker {}", self.id, worker_id);
 
                 // Update status under a short lock
@@ -862,13 +849,9 @@ impl Server {
 
                         match prev {
                             WorkerStatus::Running => {
-                                debug!("Server {}: Transitioning worker {} from Running to Waiting",
-                                self.id, worker_id);
                                 *status = WorkerStatus::Waiting;
-
-                                // Remove from running queue
                                 let _ = self.worker_queues.running.pop();
-                                debug!("Server {}: Removed worker {} from running queue",
+                                debug!("Server {}: Transitioned worker {} from Running to Waiting",
                                 self.id, worker_id);
                             },
                             _ => {
@@ -884,33 +867,15 @@ impl Server {
                 };
 
                 // Add to pending queue after releasing lock
-                if self.worker_queues.pending.push(worker_id).is_ok() {
-                    debug!("Server {}: Added worker {} to pending queue after wait",
-                    self.id, worker_id);
-                } else {
-                    error!("Server {}: Failed to add worker {} to pending queue after wait",
-                    self.id, worker_id);
-                }
-            },
-
-            e if e == UmcgEventType::Exit as u64 => {
-                debug!("Server {}: Processing EXIT for worker {}", self.id, worker_id);
-
-                // Update status under a short lock
-                if let Some(status) = self.states.get(&worker_id) {
-                    let mut status = status.lock().unwrap();
-                    debug!("Server {}: Transitioning worker {} from {:?} to Completed",
-                    self.id, worker_id, *status);
-                    *status = WorkerStatus::Completed;
+                match self.worker_queues.pending.push(worker_id) {
+                    Ok(_) => debug!("Server {}: Added worker {} to pending queue",
+                    self.id, worker_id),
+                    Err(_) => debug!("Server {}: Failed to add worker {} to pending queue",
+                    self.id, worker_id),
                 }
 
-                // Remove from any queues it might be in
-                let _ = self.worker_queues.running.pop();
-                debug!("Server {}: Removed worker {} from running queue", self.id, worker_id);
-                // Note: Worker should not be in pending queue at exit, but clean up just in case
-                while self.worker_queues.pending.pop() == Some(worker_id) {
-                    debug!("Server {}: Removed worker {} from pending queue", self.id, worker_id);
-                }
+                debug!("!!!! EVENT_HANDLER: Completed processing event type {} for worker {} !!!!",
+                event_type, worker_id);
             },
 
             _ => {
@@ -941,13 +906,6 @@ impl Server {
 struct Executor {
     config: ExecutorConfig,
     worker_handles: Vec<JoinHandle<()>>,
-}
-
-#[derive(Debug)]
-enum ContextSwitchError {
-    Timeout,
-    QueueFull,
-    Failed,
 }
 
 impl Executor {
