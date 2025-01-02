@@ -13,6 +13,8 @@ use crate::umcg_base::{UmcgCmd, UmcgEventType, DEBUG_LOGGING, EVENT_BUFFER_SIZE,
 use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
+use std::panic;
+use backtrace::Backtrace;
 
 macro_rules! info {
     ($($arg:tt)*) => {{
@@ -321,6 +323,13 @@ impl Server {
         thread::spawn(move || {
             debug!("Starting server {}", self.id);
 
+            // Set CPU affinity for this server thread
+            if let Err(e) = set_cpu_affinity(self.id) {
+                debug!("Failed to set CPU affinity for server {}: {}", self.id, e);
+            } else {
+                debug!("Server {} CPU affinity set to CPU {}", self.id, self.id);
+            }
+
             // Register with UMCG
             let reg_result = umcg_base::sys_umcg_ctl(
                 0,
@@ -395,6 +404,15 @@ impl Server {
 
     fn start_initial_server(mut self) -> JoinHandle<()> {
         thread::spawn(move || {
+            debug!("Starting server {}", self.id);
+
+            // Set CPU affinity for this server thread
+            if let Err(e) = set_cpu_affinity(self.id) {
+                debug!("Failed to set CPU affinity for server {}: {}", self.id, e);
+            } else {
+                debug!("Server {} CPU affinity set to CPU {}", self.id, self.id);
+            }
+
             // Register server with UMCG
             let reg_result = unsafe {
                 libc::syscall(
@@ -506,22 +524,55 @@ impl Server {
                 .unwrap();
             let abs_timeout = now.as_nanos() as u64 + 1_000_000_000;
      */
+
     fn run_event_loop(&self) -> Result<(), ServerError> {
         debug!("Server {}: Starting event loop", self.id);
 
-        // Track timeout state
+        // Track timeout state and stats
         const MIN_TIMEOUT_NS: u64 = 100_000;        // 100μs minimum timeout
         const MAX_TIMEOUT_NS: u64 = 1_000_000_000;  // 1s maximum timeout
         const BASE_TIMEOUT_NS: u64 = 1_000_000;     // 1ms base timeout
         let mut current_timeout = BASE_TIMEOUT_NS;
+        let mut wait_stats = WaitStats {
+            total_calls: 0,
+            eagain_count: 0,
+            timeout_count: 0,
+            last_successful_wait: None,
+            consecutive_failures: 0,
+        };
+
+        // Log initial server state
+        let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
+        println!("Server {} starting on thread {} - Initial Setup", self.id, thread_id);
+        log_cpu_affinity(self.id);
 
         while !self.done.load(Ordering::Relaxed) {
+            wait_stats.total_calls += 1;
+            let loop_start = Instant::now();
+
             // Try to schedule any pending tasks first
             let has_pending_tasks = self.manage_tasks.has_pending_tasks();
             if has_pending_tasks {
-                debug!("Server {}: Attempting to schedule pending tasks", self.id);
+                println!("Server {}: Attempting to schedule pending tasks", self.id);
+                println!("Pre-Schedule State:");
+                println!("  Pending Workers: {}", self.worker_queues.pending.len());
+                println!("  Running Workers: {}", self.worker_queues.running.len());
+                println!("  Has Tasks: {}", has_pending_tasks);
             }
-            self.try_schedule_tasks()?;
+
+            // Try to schedule tasks and track result
+            let schedule_result = self.try_schedule_tasks();
+            if let Err(e) = &schedule_result {
+                println!("Server {}: Task scheduling failed: {:?}", self.id, e);
+            }
+            schedule_result?;
+
+            // Post-scheduling state
+            if has_pending_tasks {
+                println!("Post-Schedule State:");
+                println!("  Pending Workers: {}", self.worker_queues.pending.len());
+                println!("  Running Workers: {}", self.worker_queues.running.len());
+            }
 
             let mut events = [0u64; 6];
 
@@ -530,23 +581,44 @@ impl Server {
                 current_timeout = BASE_TIMEOUT_NS;
                 BASE_TIMEOUT_NS
             } else {
-                // Exponential backoff when idle, capped at MAX_TIMEOUT_NS
                 current_timeout = (current_timeout * 2).min(MAX_TIMEOUT_NS);
                 current_timeout
             };
 
-            // Calculate absolute timeout for syscall
+            // Pre-Wait State Logging
+            println!("\n=== Server {} Wait #{} ===", self.id, wait_stats.total_calls);
+            println!("Thread State:");
+            println!("  Thread ID: {}", thread_id);
+            println!("  Current CPU: {}", get_current_cpu());
+
+            println!("Queue State:");
+            println!("  Pending Workers: {}", self.worker_queues.pending.len());
+            println!("  Running Workers: {}", self.worker_queues.running.len());
+            println!("  Tasks Waiting: {}", has_pending_tasks);
+
+            println!("Wait History:");
+            println!("  Total Calls: {}", wait_stats.total_calls);
+            println!("  EAGAIN Count: {}", wait_stats.eagain_count);
+            println!("  Timeout Count: {}", wait_stats.timeout_count);
+            println!("  Consecutive Failures: {}", wait_stats.consecutive_failures);
+            println!("  Last Success: {:?} ago", wait_stats.last_successful_wait.map(|t| t.elapsed()));
+
+            // Calculate absolute timeout
             let abs_timeout = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64 + timeout;
 
-            // Only debug UMCG wait if we have activity or significant timeout change
-            if has_pending_tasks || timeout != current_timeout {
-                debug!("Server {}: Waiting for events (timeout={}ns, pending_tasks={})",
-                self.id, timeout, has_pending_tasks);
-            }
+            println!("Wait Configuration:");
+            println!("  Relative Timeout: {}ns", timeout);
+            println!("  Absolute Timeout: {}", abs_timeout);
+            println!("  Current Time: {}", SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos());
 
+            // Make the UMCG Wait syscall
+            let syscall_start = Instant::now();
             let ret = umcg_base::sys_umcg_ctl(
                 0,
                 UmcgCmd::Wait,
@@ -555,37 +627,95 @@ impl Server {
                 Some(&mut events),
                 6
             );
+            let syscall_duration = syscall_start.elapsed();
+            let errno = unsafe { *libc::__errno_location() };
 
-            // Only debug non-timeout returns or if we have activity
-            if ret != -1 || has_pending_tasks {
-                debug!("Server {}: Wait returned {} (timeout={})",
-                self.id, ret, ret == -1 && unsafe { *libc::__errno_location() } == libc::ETIMEDOUT);
+            // Log Wait results
+            println!("Wait Result:");
+            println!("  Return: {}", ret);
+            println!("  Duration: {:?}", syscall_duration);
+            println!("  Errno: {} ({})",
+                     errno,
+                     std::io::Error::from_raw_os_error(errno));
+
+            // Update statistics and handle specific errors
+            match errno {
+                0 => {
+                    wait_stats.consecutive_failures = 0;
+                    wait_stats.last_successful_wait = Some(Instant::now());
+                }
+                libc::EAGAIN => {
+                    wait_stats.eagain_count += 1;
+                    wait_stats.consecutive_failures += 1;
+                    println!("EAGAIN Diagnostics:");
+                    println!("  Process State: {}", get_process_state());
+                    println!("  Thread Count: {}", get_thread_count());
+                    println!("  FD Count: {}", count_open_fds());
+                }
+                libc::ETIMEDOUT => {
+                    wait_stats.timeout_count += 1;
+                    wait_stats.consecutive_failures += 1;
+                }
+                _ => {
+                    println!("Unexpected errno: {}", errno);
+                    print_detailed_error_info(errno);
+                }
             }
 
-            if ret != 0 && unsafe { *libc::__errno_location() } != libc::ETIMEDOUT {
-                debug!("Server {} wait error: {}", self.id, ret);
-                return Err(ServerError::SystemError(std::io::Error::last_os_error()));
+            if ret != 0 && errno != libc::ETIMEDOUT {
+                println!("Non-timeout error occurred:");
+                println!("  Error count: {}", wait_stats.consecutive_failures);
+                println!("  Error code: {} ({})",
+                         errno,
+                         std::io::Error::from_raw_os_error(errno));
+
+                // Print stack trace for non-timeout errors
+                println!("Stack trace at error:");
+                let bt = backtrace::Backtrace::new();
+                println!("{:?}", bt);
+
+                continue;
             }
 
             // Process any events we received
-            for &event in events.iter().take_while(|&&e| e != 0) {
-                debug!("Server {}: Processing event {}", self.id, event);
-                if let Err(e) = self.handle_event(event) {
-                    debug!("Server {} event handling error: {}", self.id, e);
+            let event_count = events.iter().take_while(|&&e| e != 0).count();
+            if event_count > 0 {
+                println!("Processing {} events", event_count);
+                for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
+                    println!("Event {}: {:#x}", i, event);
+                    let event_type = event & umcg_base::UMCG_WORKER_EVENT_MASK;
+                    let worker_id = event >> umcg_base::UMCG_WORKER_ID_SHIFT;
+                    println!("  Type: {}", event_type);
+                    println!("  Worker ID: {}", worker_id);
+
+                    if let Err(e) = self.handle_event(event) {
+                        println!("Event handling error: {}", e);
+                    }
                 }
 
-                // Only debug queue stats after event handling if we processed an event
-                debug!("Server {} queues - Pending: {}, Running: {}, Preempted: {}",
-                self.id,
-                self.worker_queues.pending.len(),
-                self.worker_queues.running.len(),
-                self.worker_queues.preempted.len());
+                // Log queue state after event processing
+                println!("Post-Event Processing State:");
+                println!("  Pending Workers: {}", self.worker_queues.pending.len());
+                println!("  Running Workers: {}", self.worker_queues.running.len());
+                println!("  Preempted Workers: {}", self.worker_queues.preempted.len());
             }
+
+            // Log iteration completion
+            println!("Loop Iteration Complete:");
+            println!("  Total duration: {:?}", loop_start.elapsed());
+            println!("================\n");
         }
+
+        println!("Server {} Event Loop Stats:", self.id);
+        println!("  Total wait calls: {}", wait_stats.total_calls);
+        println!("  EAGAIN errors: {}", wait_stats.eagain_count);
+        println!("  Timeouts: {}", wait_stats.timeout_count);
+        println!("  Last successful wait: {:?} ago", wait_stats.last_successful_wait.map(|t| t.elapsed()));
 
         debug!("Server {}: Event loop terminated", self.id);
         Ok(())
     }
+
 
 
     fn try_schedule_tasks(&self) -> Result<(), ServerError> {
@@ -842,9 +972,122 @@ impl Server {
     }
 }
 
+fn log_cpu_affinity(server_id: usize) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut cpu_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), cpu_set.as_mut_ptr()) == 0 {
+            let cpu_set = cpu_set.assume_init();
+            let mut allowed_cpus = Vec::new();
+
+            for i in 0..libc::CPU_SETSIZE as i32 {
+                if libc::CPU_ISSET(i as usize, &cpu_set) {
+                    allowed_cpus.push(i);
+                }
+            }
+
+            println!("Server {} CPU Affinity:", server_id);
+            println!("  Allowed CPUs: {:?}", allowed_cpus);
+
+            // Get current CPU
+            let current_cpu = get_current_cpu();
+            println!("  Current CPU: {}", current_cpu);
+
+            // Check if current CPU is in allowed set
+            if current_cpu >= 0 && libc::CPU_ISSET(current_cpu as usize, &cpu_set) {
+                println!("  Status: Running on allowed CPU");
+            } else {
+                println!("  Status: WARNING - Current CPU not in allowed set!");
+            }
+        } else {
+            println!("Server {}: Failed to get CPU affinity: {}",
+                     server_id,
+                     std::io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    println!("Server {}: CPU affinity logging not supported on this platform", server_id);
+}
+
 struct Executor {
     config: ExecutorConfig,
     worker_handles: Vec<JoinHandle<()>>,
+}
+
+fn get_current_cpu() -> i32 {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut cpu_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), cpu_set.as_mut_ptr()) == 0 {
+            for i in 0..libc::CPU_SETSIZE as i32 {
+                if libc::CPU_ISSET(i as usize, &cpu_set.assume_init()) {
+                    return i;
+                }
+            }
+        }
+        -1
+    }
+    #[cfg(not(target_os = "linux"))]
+    -1
+}
+
+fn get_process_priority() -> i32 {
+    unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) }
+}
+
+fn get_process_state() -> String {
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(state_line) = status.lines().find(|l| l.starts_with("State:")) {
+            return state_line.to_string();
+        }
+    }
+    "Unknown".to_string()
+}
+
+fn count_open_fds() -> usize {
+    if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+        entries.count()
+    } else {
+        0
+    }
+}
+
+fn get_thread_count() -> usize {
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(threads_line) = status.lines().find(|l| l.starts_with("Threads:")) {
+            if let Some(count) = threads_line.split_whitespace().nth(1) {
+                if let Ok(num) = count.parse() {
+                    return num;
+                }
+            }
+        }
+    }
+    0
+}
+
+fn print_detailed_error_info(errno: i32) {
+    println!("Detailed Error Information:");
+    println!("  Error: {} ({})",
+             std::io::Error::from_raw_os_error(errno),
+             errno);
+    println!("  Description: {}", unsafe {
+        std::ffi::CStr::from_ptr(libc::strerror(errno))
+            .to_string_lossy()
+    });
+
+    // Print stack trace
+    println!("Stack Trace:");
+    let bt = backtrace::Backtrace::new();
+    println!("{:?}", bt);
+}
+
+struct WaitStats {
+    total_calls: usize,
+    eagain_count: usize,
+    timeout_count: usize,
+    last_successful_wait: Option<Instant>,
+    consecutive_failures: usize,
 }
 
 impl Executor {
@@ -1065,6 +1308,34 @@ impl TaskHandle {
     }
 }
 
+fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+        let set_ref = &mut *set.as_mut_ptr();
+
+        libc::CPU_ZERO(set_ref);
+        libc::CPU_SET(cpu_id, set_ref);
+
+        let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
+        if result != 0 {
+            debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
+        } else {
+            debug!("Successfully set CPU affinity to {}", cpu_id);
+        }
+
+        // Verify the affinity was set
+        let mut verify_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), verify_set.as_mut_ptr()) == 0 {
+            let verify_set = verify_set.assume_init();
+            if !libc::CPU_ISSET(cpu_id, &verify_set) {
+                debug!("WARNING: CPU affinity verification failed for CPU {}", cpu_id);
+            }
+        }
+    }
+    Ok(())
+}
+
 // pub fn test_basic_worker() {
 //     const WORKER_COUNT: usize = 2;
 //     const QUEUE_CAPACITY: usize = 100;
@@ -1117,7 +1388,7 @@ impl TaskHandle {
 // }
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
-    const WORKER_COUNT: usize = 30;
+    const WORKER_COUNT: usize = 10;
     const SERVER_COUNT: usize = 3;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 10000;
 

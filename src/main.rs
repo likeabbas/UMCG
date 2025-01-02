@@ -750,6 +750,8 @@ fn run_full_tests() {
 }
 
 fn main() {
+    std::env::set_var("RUST_BACKTRACE", "full");
+
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("-d") => {
