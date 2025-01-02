@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use crossbeam::queue::ArrayQueue;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
@@ -1018,106 +1018,233 @@ impl Server {
     //     Ok(())
     // }
 
+    // fn handle_event(&self, event: u64) -> Result<(), ServerError> {
+    //     let event_type = event & UMCG_WORKER_EVENT_MASK;
+    //     let worker_id = event >> UMCG_WORKER_ID_SHIFT;
+    //
+    //     debug!("Server {}: Processing event {:?} for worker {} (raw event: {:#x})",
+    //         self.id,
+    //         match event_type {
+    //             e if e == UmcgEventType::Block as u64 => "BLOCK",
+    //             e if e == UmcgEventType::Wake as u64 => "WAKE",
+    //             e if e == UmcgEventType::Wait as u64 => "WAIT",
+    //             e if e == UmcgEventType::Exit as u64 => "EXIT",
+    //             e if e == UmcgEventType::Timeout as u64 => "TIMEOUT",
+    //             e if e == UmcgEventType::Preempt as u64 => "PREEMPT",
+    //             _ => "UNKNOWN",
+    //         },
+    //         worker_id,
+    //         event
+    //     );
+    //
+    //     match event_type {
+    //         e if e == UmcgEventType::Block as u64 => {
+    //             // Update status only, keep in running queue
+    //             if let Some(status) = self.states.get(&worker_id) {
+    //                 let mut status = status.lock().unwrap();
+    //                 if *status == WorkerStatus::Running {
+    //                     *status = WorkerStatus::Blocked;
+    //                     debug!("Worker {} blocked while running", worker_id);
+    //                 }
+    //             }
+    //         },
+    //         e if e == UmcgEventType::Wake as u64 => {
+    //             let raw_tid = event >> UMCG_WORKER_ID_SHIFT;  // Get raw tid from event
+    //             let worker_id = raw_tid << UMCG_WORKER_ID_SHIFT;  // Shift for HashMap lookup
+    //
+    //             debug!("Server {}: Processing WAKE event for worker {} (raw tid: {})",
+    //     self.id, worker_id, raw_tid);
+    //
+    //             if let Some(status) = self.states.get(&worker_id) {  // Use shifted ID for lookup
+    //                 let mut status = status.lock().unwrap();
+    //                 if *status == WorkerStatus::Blocked {
+    //                     debug!("Server {}: Worker {} (tid {}) transitioning from Blocked to Running",
+    //             self.id, worker_id, raw_tid);
+    //                     *status = WorkerStatus::Running;
+    //                     drop(status);  // Drop lock before context switch
+    //
+    //                     // Do context switch with raw tid
+    //                     let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
+    //                     let switch_ret = unsafe {
+    //                         libc::syscall(
+    //                             SYS_UMCG_CTL as i64,
+    //                             0,
+    //                             UmcgCmd::CtxSwitch as i64,
+    //                             raw_tid as i32,  // Use raw tid for context switch
+    //                             0,
+    //                             switch_events.as_mut_ptr() as i64,
+    //                             EVENT_BUFFER_SIZE as i64
+    //                         )
+    //                     };
+    //
+    //                     if switch_ret == 0 {
+    //                         debug!("Server {}: Successfully resumed worker {} (tid {})",
+    //                 self.id, worker_id, raw_tid);
+    //                     } else {
+    //                         // Revert status on failed switch
+    //                         if let Some(status) = self.states.get(&worker_id) {
+    //                             let mut status = status.lock().unwrap();
+    //                             *status = WorkerStatus::Blocked;
+    //                         }
+    //                     }
+    //                 } else {
+    //                     debug!("Server {}: Worker {} (tid {}) not blocked (status: {:?})",
+    //             self.id, worker_id, raw_tid, *status);
+    //                 }
+    //             } else {
+    //                 debug!("Server {}: No state found for worker {} (tid {})",
+    //         self.id, worker_id, raw_tid);
+    //             }
+    //         },
+    //         e if e == UmcgEventType::Wait as u64 => {
+    //             // Handle waiting state transition
+    //             if let Some(status) = self.states.get(&worker_id) {
+    //                 let mut status = status.lock().unwrap();
+    //                 if *status == WorkerStatus::Running {
+    //                     *status = WorkerStatus::Waiting;
+    //                     drop(status); // Release lock before queue operations
+    //
+    //                     // Remove from running and add to pending atomically
+    //                     if self.worker_queues.running.pop().is_some() {
+    //                         if self.worker_queues.pending.push(worker_id).is_err() {
+    //                             debug!("Failed to move worker {} to pending queue", worker_id);
+    //                             // Try to recover
+    //                             let _ = self.worker_queues.running.push(worker_id);
+    //                             if let Some(status) = self.states.get(&worker_id) {
+    //                                 let mut status = status.lock().unwrap();
+    //                                 *status = WorkerStatus::Running;
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         },
+    //         _ => {
+    //             debug!("Unknown event type {} for worker {}", event_type, worker_id);
+    //         }
+    //     }
+    //     Ok(())
+    // }
     fn handle_event(&self, event: u64) -> Result<(), ServerError> {
         let event_type = event & UMCG_WORKER_EVENT_MASK;
-        let worker_id = event >> UMCG_WORKER_ID_SHIFT;
+        let raw_tid = event >> UMCG_WORKER_ID_SHIFT;
+        let worker_id = self.raw_tid_to_worker_id(raw_tid);
 
-        debug!("Server {}: Processing event {:?} for worker {} (raw event: {:#x})",
-            self.id,
-            match event_type {
-                e if e == UmcgEventType::Block as u64 => "BLOCK",
-                e if e == UmcgEventType::Wake as u64 => "WAKE",
-                e if e == UmcgEventType::Wait as u64 => "WAIT",
-                e if e == UmcgEventType::Exit as u64 => "EXIT",
-                e if e == UmcgEventType::Timeout as u64 => "TIMEOUT",
-                e if e == UmcgEventType::Preempt as u64 => "PREEMPT",
-                _ => "UNKNOWN",
-            },
-            worker_id,
-            event
-        );
+        debug!("Server {}: Processing event type {} from worker {} (tid: {}, raw event: {})",
+        self.id, event_type, worker_id, raw_tid, event);
 
         match event_type {
             e if e == UmcgEventType::Block as u64 => {
-                // Update status only, keep in running queue
-                if let Some(status) = self.states.get(&worker_id) {
-                    let mut status = status.lock().unwrap();
+                debug!("Server {}: Worker {} (tid: {}) blocked while in running queue",
+                self.id, worker_id, raw_tid);
+
+                // Get current status and update it under a short lock
+                if let Some(mut status) = self.get_worker_state(worker_id) {
+                    debug!("Server {}: Processing BLOCK for worker {} (tid: {}) in state {:?}",
+                    self.id, worker_id, raw_tid, *status);
                     if *status == WorkerStatus::Running {
                         *status = WorkerStatus::Blocked;
-                        debug!("Worker {} blocked while running", worker_id);
-                    }
-                }
-            },
-            e if e == UmcgEventType::Wake as u64 => {
-                debug!("Server {}: Processing WAKE event for worker {} (status check)",
-        self.id, worker_id >> UMCG_WORKER_ID_SHIFT);
-
-                // Scope the status check and update
-                let (should_wake, prev_status) = {
-                    if let Some(status) = self.states.get(&worker_id) {
-                        let mut status = status.lock().unwrap();
-                        let prev = status.clone();
-                        if *status == WorkerStatus::Blocked {
-                            *status = WorkerStatus::Running;
-                            (true, prev)
-                        } else {
-                            (false, prev)
-                        }
-                    } else {
-                        (false, WorkerStatus::Initializing)  // Default for logging
-                    }
-                };
-
-                if should_wake {
-                    debug!("Server {}: Worker {} transitioning from {:?} to Running, doing context switch",
-            self.id, worker_id >> UMCG_WORKER_ID_SHIFT, prev_status);
-
-                    match self.context_switch_to_worker(worker_id) {
-                        Ok(_) => {
-                            debug!("Server {}: Successfully switched to worker {} after wake - waiting for Wait event",
-                    self.id, worker_id >> UMCG_WORKER_ID_SHIFT);
-                        }
-                        Err(e) => {
-                            debug!("Server {}: Context switch failed for worker {} after wake: {:?}", self.id, worker_id >> UMCG_WORKER_ID_SHIFT, e);
-                            // Revert status on failed switch
-                            if let Some(status) = self.states.get(&worker_id) {
-                                let mut status = status.lock().unwrap();
-                                *status = WorkerStatus::Blocked;
-                                debug!("Server {}: Reverted worker {} status back to Blocked due to switch failure", self.id, worker_id >> UMCG_WORKER_ID_SHIFT);
-                            }
-                        }
+                        debug!("Server {}: Updated worker {} (tid: {}) status from Running to Blocked",
+                        self.id, worker_id, raw_tid);
                     }
                 } else {
-                    debug!("Server {}: Skipped wake for worker {} - current status: {:?}",self.id, worker_id >> UMCG_WORKER_ID_SHIFT, prev_status);
+                    debug!("Server {}: No state found for worker {} (tid: {}) during BLOCK",
+                    self.id, worker_id, raw_tid);
+                    return Ok(());
                 }
+                // Worker stays in running queue while blocked
+                debug!("!!!! EVENT_HANDLER: Completed processing BLOCK for worker {} (tid: {}) !!!!",
+                worker_id, raw_tid);
             },
-            e if e == UmcgEventType::Wait as u64 => {
-                // Handle waiting state transition
-                if let Some(status) = self.states.get(&worker_id) {
-                    let mut status = status.lock().unwrap();
-                    if *status == WorkerStatus::Running {
-                        *status = WorkerStatus::Waiting;
-                        drop(status); // Release lock before queue operations
 
-                        // Remove from running and add to pending atomically
-                        if self.worker_queues.running.pop().is_some() {
-                            if self.worker_queues.pending.push(worker_id).is_err() {
-                                debug!("Failed to move worker {} to pending queue", worker_id);
-                                // Try to recover
-                                let _ = self.worker_queues.running.push(worker_id);
-                                if let Some(status) = self.states.get(&worker_id) {
-                                    let mut status = status.lock().unwrap();
-                                    *status = WorkerStatus::Running;
+            e if e == UmcgEventType::Wake as u64 => {
+                debug!("Server {}: Processing WAKE for worker {} (tid: {})",
+                self.id, worker_id, raw_tid);
+
+                if let Some(mut status) = self.get_worker_state(worker_id) {
+                    if *status == WorkerStatus::Blocked {
+                        debug!("Server {}: Worker {} (tid: {}) woke up from blocked state, resuming task",
+                        self.id, worker_id, raw_tid);
+
+                        *status = WorkerStatus::Running;
+                        drop(status);  // Release lock before context switch
+
+                        // Do context switch after releasing lock
+                        debug!("Server {}: Context switching to unblocked worker {} (tid: {}) to resume task",
+                        self.id, worker_id, raw_tid);
+
+                        match self.context_switch_to_worker(worker_id) {
+                            Ok(_) => {
+                                debug!("Server {}: Successfully resumed worker {} (tid: {}) after wake",
+                                self.id, worker_id, raw_tid);
+                            }
+                            Err(e) => {
+                                debug!("Server {}: Context switch failed for worker {} (tid: {}): {:?}",
+                                self.id, worker_id, raw_tid, e);
+                                // Revert status on failed switch
+                                if let Some(mut status) = self.get_worker_state(worker_id) {
+                                    *status = WorkerStatus::Blocked;
                                 }
                             }
                         }
+                    } else {
+                        debug!("Server {}: Worker {} (tid: {}) not blocked (status: {:?})",
+                        self.id, worker_id, raw_tid, *status);
                     }
+                } else {
+                    debug!("Server {}: No state found for worker {} (tid: {})",
+                    self.id, worker_id, raw_tid);
                 }
             },
+
+            e if e == UmcgEventType::Wait as u64 => {
+                debug!("Server {}: Got explicit WAIT from worker {} (tid: {})",
+                self.id, worker_id, raw_tid);
+
+                if let Some(mut status) = self.get_worker_state(worker_id) {
+                    let prev = status.clone();
+                    debug!("Server {}: Processing explicit WAIT for worker {} (tid: {}) in state {:?}",
+                    self.id, worker_id, raw_tid, prev);
+
+                    match prev {
+                        WorkerStatus::Running => {
+                            *status = WorkerStatus::Waiting;
+                            let _ = self.worker_queues.running.pop();
+                            debug!("Server {}: Transitioned worker {} (tid: {}) from Running to Waiting",
+                            self.id, worker_id, raw_tid);
+
+                            // Release lock before queue operations
+                            drop(status);
+
+                            match self.worker_queues.pending.push(worker_id) {
+                                Ok(_) => debug!("Server {}: Added worker {} (tid: {}) to pending queue",
+                                self.id, worker_id, raw_tid),
+                                Err(_) => debug!("Server {}: Failed to add worker {} (tid: {}) to pending queue",
+                                self.id, worker_id, raw_tid),
+                            }
+                        },
+                        _ => {
+                            debug!("Server {}: Unexpected WAIT for worker {} (tid: {}) in state {:?}",
+                            self.id, worker_id, raw_tid, prev);
+                        }
+                    }
+                } else {
+                    debug!("Server {}: No state found for worker {}", self.id, worker_id);
+                    return Ok(());
+                }
+
+                debug!("!!!! EVENT_HANDLER lame: Completed processing WAIT for worker {} (tid: {}) !!!!",
+                worker_id, raw_tid);
+            },
+
             _ => {
-                debug!("Unknown event type {} for worker {}", event_type, worker_id);
+                return Err(ServerError::InvalidWorkerEvent {
+                    worker_id: worker_id as usize,
+                    event,
+                });
             }
         }
+
         Ok(())
     }
 
@@ -1193,6 +1320,25 @@ impl Server {
                 debug!("Server {}: Failed to send shutdown to worker {}", self.id, worker_id);
             }
         }
+    }
+
+    fn get_worker_state(&self, worker_id: u64) -> Option<MutexGuard<WorkerStatus>> {
+        // Ensure worker_id is shifted
+        let shifted_id = if worker_id & UMCG_WORKER_EVENT_MASK == 0 {
+            worker_id
+        } else {
+            worker_id << UMCG_WORKER_ID_SHIFT
+        };
+
+        self.states.get(&shifted_id).and_then(|lock| lock.lock().ok())
+    }
+
+    fn raw_tid_to_worker_id(&self, raw_tid: u64) -> u64 {
+        raw_tid << UMCG_WORKER_ID_SHIFT
+    }
+
+    fn worker_id_to_raw_tid(&self, worker_id: u64) -> i32 {
+        (worker_id >> UMCG_WORKER_ID_SHIFT) as i32
     }
 }
 

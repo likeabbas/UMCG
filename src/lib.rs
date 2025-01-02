@@ -78,6 +78,7 @@ pub enum ServerError {
         ret_code: i32,
         errno: i32,
     },
+    // ContextSwitchFailed,
     QueueFull,
 }
 
@@ -98,6 +99,7 @@ impl std::fmt::Display for ServerError {
             Self::ContextSwitchFailed { worker_id, ret_code, errno } =>
                 write!(f, "Context switch failed for worker {} with return code {} (errno: {})",
                        worker_id >> UMCG_WORKER_ID_SHIFT, ret_code, errno),
+            // Self::ContextSwitchFailed => write!(f, "Context switch failed"),
             Self::QueueFull => write!(f, "Queue is full"),
         }
     }
