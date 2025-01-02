@@ -73,7 +73,11 @@ pub enum ServerError {
     WorkerRegistrationFailed { worker_id: usize, error: i32 },
     InvalidWorkerEvent { worker_id: usize, event: u64 },
     SystemError(std::io::Error),
-    ContextSwitchFailed,
+    ContextSwitchFailed {
+        worker_id: u64,
+        ret_code: i32,
+        errno: i32,
+    },
     QueueFull,
 }
 
@@ -91,7 +95,9 @@ impl std::fmt::Display for ServerError {
                 write!(f, "Invalid event {} from worker {}", event, worker_id)
             }
             Self::SystemError(e) => write!(f, "System error: {}", e),
-            Self::ContextSwitchFailed => write!(f, "Context switch failed"),
+            Self::ContextSwitchFailed { worker_id, ret_code, errno } =>
+                write!(f, "Context switch failed for worker {} with return code {} (errno: {})",
+                       worker_id >> UMCG_WORKER_ID_SHIFT, ret_code, errno),
             Self::QueueFull => write!(f, "Queue is full"),
         }
     }
