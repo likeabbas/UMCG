@@ -80,6 +80,7 @@ pub enum ServerError {
     },
     // ContextSwitchFailed,
     QueueFull,
+    NoServerFound
 }
 
 impl std::fmt::Display for ServerError {
@@ -101,6 +102,7 @@ impl std::fmt::Display for ServerError {
                        worker_id >> UMCG_WORKER_ID_SHIFT, ret_code, errno),
             // Self::ContextSwitchFailed => write!(f, "Context switch failed"),
             Self::QueueFull => write!(f, "Queue is full"),
+            Self::NoServerFound => write!(f, "No server found"),
         }
     }
 }

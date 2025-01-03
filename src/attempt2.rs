@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use crossbeam::queue::ArrayQueue;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use libc::pid_t;
@@ -91,7 +91,9 @@ impl Worker {
         id: usize,
         cpu_id: usize,
         states: Arc<Mutex<HashMap<u64, Mutex<WorkerStatus>>>>,
-        channels: Arc<Mutex<HashMap<u64, Sender<WorkerTask>>>>
+        channels: Arc<Mutex<HashMap<u64, Sender<WorkerTask>>>>,
+        router: Arc<ServerRouter>,
+        server_id: usize,
     ) -> JoinHandle<()> {
         let (tx, rx) = channel();
         let worker = Worker::new(id, rx);
@@ -99,6 +101,8 @@ impl Worker {
         let handle = thread::spawn(move || {
             let tid = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
             let worker_id = (tid as u64) << UMCG_WORKER_ID_SHIFT;  // Shift the tid for storage
+
+            router.register_worker(worker_id, server_id);
 
             if let Err(e) = set_cpu_affinity(cpu_id) {
                 debug!("Failed to set CPU affinity for worker {}: {}", worker_id, e);
@@ -303,6 +307,8 @@ struct Server {
     manage_tasks: Arc<dyn ManageTask>,
     worker_queues: Arc<WorkerQueues>,
     metrics: Arc<ContextSwitchMetrics>,
+    router: Arc<ServerRouter>,
+    queue: Arc<ServerQueue>,
     done: Arc<AtomicBool>
 }
 
@@ -313,8 +319,12 @@ impl Server {
         channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
         manage_tasks: Arc<dyn ManageTask>,
         worker_queues: Arc<WorkerQueues>,
+        router: Arc<ServerRouter>,
         done: Arc<AtomicBool>,
     ) -> Self {
+        let queue = router.get_server_queue(id)
+            .expect("Server queue not found");
+
         Self {
             id,
             states,
@@ -322,6 +332,8 @@ impl Server {
             manage_tasks,
             worker_queues,
             metrics: Arc::new(ContextSwitchMetrics::new()),
+            router,
+            queue,
             done,
         }
     }
@@ -449,56 +461,120 @@ impl Server {
         })
     }
 
+    // fn run_event_loop(&mut self) -> Result<(), ServerError> {
+    //     debug!("Server {}: Starting event loop", self.id);
+    //     let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
+    //     log_cpu_affinity(self.id);
+    //
+    //     while !self.done.load(Ordering::Relaxed) {
+    //         // Try to schedule any pending tasks first
+    //         let has_pending_tasks = self.manage_tasks.has_pending_tasks();
+    //         if has_pending_tasks {
+    //             println!("Server {}: Attempting to schedule pending tasks", self.id);
+    //             println!("Pre-Schedule State:");
+    //             println!("  Pending Workers: {}", self.worker_queues.pending.len());
+    //             println!("  Running Workers: {}", self.worker_queues.running.len());
+    //             println!("  Has Tasks: {}", has_pending_tasks);
+    //
+    //             if let Err(e) = self.try_schedule_tasks() {
+    //                 println!("Server {}: Task scheduling failed: {:?}", self.id, e);
+    //             }
+    //         }
+    //
+    //         let mut events = [0u64; EVENT_BUFFER_SIZE];
+    //         debug!("Server {}: Waiting for events with retry", self.id);
+    //
+    //         // Use umcg_wait_retry instead of direct syscall
+    //         let ret = umcg_base::umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
+    //
+    //         if ret != 0 {
+    //             let errno = unsafe { *libc::__errno_location() };
+    //             if errno != libc::ETIMEDOUT {
+    //                 debug!("Server {}: Wait failed with error {} ({})",
+    //                 self.id, ret, std::io::Error::from_raw_os_error(errno));
+    //                 continue;
+    //             }
+    //         }
+    //
+    //         // Process any events we received
+    //         let event_count = events.iter().take_while(|&&e| e != 0).count();
+    //         if event_count > 0 {
+    //             debug!("Server {}: Processing {} events", self.id, event_count);
+    //             for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
+    //                 let event_type = event & UMCG_WORKER_EVENT_MASK;
+    //                 // let worker_id = event >> UMCG_WORKER_ID_SHIFT;
+    //                 let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
+    //                 if !self.channels.contains_key(&worker_id) {
+    //                     debug!("Server {}: Ignoring event {} for worker {} - not managed by this server",
+    //         self.id, event_type, worker_id);
+    //                     continue;
+    //                 }
+    //                 debug!("Server {}: Event {}/{}: type {} for worker {} (raw: {:#x})",
+    //                 self.id, i + 1, event_count, event_type, worker_id, event);
+    //
+    //                 if let Err(e) = self.handle_event(event) {
+    //                     debug!("Server {}: Event handling error: {}", self.id, e);
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
+
     fn run_event_loop(&mut self) -> Result<(), ServerError> {
         debug!("Server {}: Starting event loop", self.id);
         let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
         log_cpu_affinity(self.id);
 
         while !self.done.load(Ordering::Relaxed) {
-            // Try to schedule any pending tasks first
+            // Process any forwarded events first
+            while let Some(event) = self.queue.pop_event() {
+                debug!("Server {}: Processing forwarded event {}", self.id, event);
+                self.handle_event(event)?;
+            }
+
+            // Try to schedule any pending tasks
             let has_pending_tasks = self.manage_tasks.has_pending_tasks();
             if has_pending_tasks {
-                println!("Server {}: Attempting to schedule pending tasks", self.id);
-                println!("Pre-Schedule State:");
-                println!("  Pending Workers: {}", self.worker_queues.pending.len());
-                println!("  Running Workers: {}", self.worker_queues.running.len());
-                println!("  Has Tasks: {}", has_pending_tasks);
-
                 if let Err(e) = self.try_schedule_tasks() {
-                    println!("Server {}: Task scheduling failed: {:?}", self.id, e);
+                    debug!("Server {}: Task scheduling failed: {:?}", self.id, e);
                 }
             }
 
             let mut events = [0u64; EVENT_BUFFER_SIZE];
             debug!("Server {}: Waiting for events with retry", self.id);
 
-            // Use umcg_wait_retry instead of direct syscall
             let ret = umcg_base::umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
 
             if ret != 0 {
                 let errno = unsafe { *libc::__errno_location() };
                 if errno != libc::ETIMEDOUT {
                     debug!("Server {}: Wait failed with error {} ({})",
-                    self.id, ret, std::io::Error::from_raw_os_error(errno));
+                        self.id, ret, std::io::Error::from_raw_os_error(errno));
                     continue;
                 }
             }
 
-            // Process any events we received
+            // Process received events
             let event_count = events.iter().take_while(|&&e| e != 0).count();
             if event_count > 0 {
                 debug!("Server {}: Processing {} events", self.id, event_count);
                 for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
-                    let event_type = event & UMCG_WORKER_EVENT_MASK;
-                    // let worker_id = event >> UMCG_WORKER_ID_SHIFT;
                     let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
+
+                    // Check if this event is for one of our workers
                     if !self.channels.contains_key(&worker_id) {
-                        debug!("Server {}: Ignoring event {} for worker {} - not managed by this server",
-            self.id, event_type, worker_id);
+                        debug!("Server {}: Forwarding event {} for worker {} to correct server",
+                            self.id, event & UMCG_WORKER_EVENT_MASK, worker_id);
+                        if let Err(e) = self.router.forward_event(worker_id, event) {
+                            debug!("Server {}: Failed to forward event: {:?}", self.id, e);
+                        }
                         continue;
                     }
+
                     debug!("Server {}: Event {}/{}: type {} for worker {} (raw: {:#x})",
-                    self.id, i + 1, event_count, event_type, worker_id, event);
+                        self.id, i + 1, event_count, event & UMCG_WORKER_EVENT_MASK,
+                        worker_id, event);
 
                     if let Err(e) = self.handle_event(event) {
                         debug!("Server {}: Event handling error: {}", self.id, e);
@@ -1379,6 +1455,7 @@ impl Executor {
         channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
         worker_queues: Arc<WorkerQueues>,
         manage_tasks: Arc<dyn ManageTask>,
+        router: Arc<ServerRouter>,
         done: Arc<AtomicBool>,
         wait: Arc<AtomicBool>,
     ) {
@@ -1388,6 +1465,7 @@ impl Executor {
             channels,
             manage_tasks,
             worker_queues,
+            router,
             done,
         );
 
@@ -1395,7 +1473,7 @@ impl Executor {
         server.start_server(wait);
     }
 
-    pub fn initialize_workers(&mut self,  cpu_id: usize, worker_count: usize) -> (
+    pub fn initialize_workers(&mut self,  cpu_id: usize, worker_count: usize, router: Arc<ServerRouter>) -> (
         Arc<HashMap<u64, Mutex<WorkerStatus>>>,
         Arc<HashMap<u64, Sender<WorkerTask>>>,
     ) {
@@ -1408,7 +1486,9 @@ impl Executor {
                 worker_id,
                 cpu_id,
                 Arc::clone(&worker_states),
-                Arc::clone(&worker_channels)
+                Arc::clone(&worker_channels),
+                router.clone(),
+                cpu_id,
             );
 
             self.worker_handles.push(handle);
@@ -1632,12 +1712,84 @@ fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
 //     debug!("Test completed successfully");
 // }
 
+#[derive(Debug)]
+pub struct ServerQueue {
+    events: ArrayQueue<u64>,
+    server_id: usize,
+}
+
+impl ServerQueue {
+    pub fn new(server_id: usize, capacity: usize) -> Self {
+        Self {
+            events: ArrayQueue::new(capacity),
+            server_id,
+        }
+    }
+
+    pub fn push_event(&self, event: u64) -> Result<(), u64> {
+        self.events.push(event)
+    }
+
+    pub fn pop_event(&self) -> Option<u64> {
+        self.events.pop()
+    }
+}
+
+#[derive(Debug)]
+pub struct ServerRouter {
+    // Map worker_id to server_id
+    worker_assignments: RwLock<HashMap<u64, usize>>,
+    // Map server_id to its event queue
+    server_queues: HashMap<usize, Arc<ServerQueue>>,
+}
+
+impl ServerRouter {
+    pub fn new(server_count: usize, queue_capacity: usize) -> Arc<Self> {
+        let mut server_queues = HashMap::new();
+        for server_id in 0..server_count {
+            server_queues.insert(
+                server_id,
+                Arc::new(ServerQueue::new(server_id, queue_capacity))
+            );
+        }
+
+        Arc::new(Self {
+            worker_assignments: RwLock::new(HashMap::new()),
+            server_queues,
+        })
+    }
+
+    pub fn register_worker(&self, worker_id: u64, server_id: usize) {
+        let mut assignments = self.worker_assignments.write().unwrap();
+        assignments.insert(worker_id, server_id);
+        debug!("Registered worker {} to server {}", worker_id, server_id);
+    }
+
+    pub fn get_server_queue(&self, server_id: usize) -> Option<Arc<ServerQueue>> {
+        self.server_queues.get(&server_id).cloned()
+    }
+
+    pub fn forward_event(&self, worker_id: u64, event: u64) -> Result<(), ServerError> {
+        let assignments = self.worker_assignments.read().unwrap();
+        if let Some(&server_id) = assignments.get(&worker_id) {
+            if let Some(queue) = self.server_queues.get(&server_id) {
+                queue.push_event(event).map_err(|_| ServerError::QueueFull)?;
+                debug!("Forwarded event {} for worker {} to server {}",
+                    event & UMCG_WORKER_EVENT_MASK, worker_id, server_id);
+                return Ok(());
+            }
+        }
+        Err(ServerError::NoServerFound)
+    }
+}
+
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
     const WORKER_COUNT: usize = 10;
-    const SERVER_COUNT: usize = 2;  // Changed this to test multiple servers
+    const SERVER_COUNT: usize = 1;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
 
     // Create task queue and worker queues
+    let router = ServerRouter::new(SERVER_COUNT, QUEUE_CAPACITY);
     let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
     let task_stats = TaskStats::new();
 
@@ -1652,7 +1804,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
 
     for server_id in 0..SERVER_COUNT {
         let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
-        let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT);
+        let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT, router.clone());
 
         executor.initialize_server_and_setup_workers(
             server_id,
@@ -1660,6 +1812,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
             channels.clone(),
             worker_queues.clone(),
             task_queue.clone(),
+            router.clone(),
             done.clone(),
             wait.clone(),
         );
@@ -1790,6 +1943,8 @@ pub fn run_echo_server_demo() -> i32 {
 
     const SERVER_COUNT : usize = 4;
 
+    let router = ServerRouter::new(SERVER_COUNT, QUEUE_CAPACITY);
+
     // Create task queue and worker queues
     let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
     let task_stats = TaskStats::new();
@@ -1806,7 +1961,7 @@ pub fn run_echo_server_demo() -> i32 {
 
     for server_id in 0..SERVER_COUNT {
         let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
-        let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT);
+        let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT, router.clone());
         let done = Arc::new(AtomicBool::new(false));
         let done_tcp = done.clone(); // Clone for TCP accept loop
 
@@ -1817,6 +1972,7 @@ pub fn run_echo_server_demo() -> i32 {
             channels.clone(),
             worker_queues.clone(),
             task_queue.clone(),
+            router.clone(),
             done.clone(),
             wait.clone(),
         );
