@@ -1,3 +1,4 @@
+use std::time::SystemTime;
 use libc::{self, pid_t, syscall, SYS_gettid, EINTR};
 
 pub static DEBUG_LOGGING: bool = true;
@@ -133,6 +134,13 @@ pub fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event
 
 pub fn umcg_wait_retry_timeout(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz: i32, timeout_ns: u64) -> i32 {
     let mut flags = 0;
+
+    // Calculate absolute timeout from relative timeout
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let abs_timeout = now.as_nanos() as u64 + timeout_ns;
+
     loop {
         debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {}, timeout: {} ns !!!!!!!!!!",
             worker_id, flags, timeout_ns);
@@ -141,14 +149,20 @@ pub fn umcg_wait_retry_timeout(worker_id: u64, mut events_buf: Option<&mut [u64]
             flags,
             UmcgCmd::Wait,
             (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
-            timeout_ns,
+            abs_timeout,
             events,
             event_sz,
         );
         debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
-        if ret != -1 || unsafe { *libc::__errno_location() } != EINTR {
-            return ret;
+
+        // If we got EINTR and it wasn't a timeout, retry with interrupted flag
+        let errno = unsafe { *libc::__errno_location() };
+        if ret == -1 && errno == EINTR && errno != libc::ETIMEDOUT {
+            flags = UMCG_WAIT_FLAG_INTERRUPTED;
+            continue;
         }
-        flags = UMCG_WAIT_FLAG_INTERRUPTED;
+
+        // For any other result (including timeout), return immediately
+        return ret;
     }
 }

@@ -449,209 +449,6 @@ impl Server {
         })
     }
 
-
-    /*
-        let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap();
-            let abs_timeout = now.as_nanos() as u64 + 1_000_000_000;
-     */
-
-    // fn run_event_loop(&self) -> Result<(), ServerError> {
-    //     // TODO: ignore wait events that aren't our workers
-    //     debug!("Server {}: Starting event loop", self.id);
-    //
-    //     // Track timeout state and stats
-    //     const MIN_TIMEOUT_NS: u64 = 100_000;        // 100μs minimum timeout
-    //     const MAX_TIMEOUT_NS: u64 = 1_000_000_000;  // 1s maximum timeout
-    //     const BASE_TIMEOUT_NS: u64 = 10_000_000;     // 1ms base timeout
-    //     let mut current_timeout = BASE_TIMEOUT_NS;
-    //     let mut wait_stats = WaitStats {
-    //         total_calls: 0,
-    //         eagain_count: 0,
-    //         timeout_count: 0,
-    //         last_successful_wait: None,
-    //         consecutive_failures: 0,
-    //     };
-    //
-    //     // Log initial server state
-    //     let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
-    //     println!("Server {} starting on thread {} - Initial Setup", self.id, thread_id);
-    //     log_cpu_affinity(self.id);
-    //
-    //     while !self.done.load(Ordering::Relaxed) {
-    //         wait_stats.total_calls += 1;
-    //         let loop_start = Instant::now();
-    //
-    //         // Try to schedule any pending tasks first
-    //         let has_pending_tasks = self.manage_tasks.has_pending_tasks();
-    //         if has_pending_tasks {
-    //             println!("Server {}: Attempting to schedule pending tasks", self.id);
-    //             println!("Pre-Schedule State:");
-    //             println!("  Pending Workers: {}", self.worker_queues.pending.len());
-    //             println!("  Running Workers: {}", self.worker_queues.running.len());
-    //             println!("  Has Tasks: {}", has_pending_tasks);
-    //         }
-    //
-    //         // Try to schedule tasks and track result
-    //         let schedule_result = self.try_schedule_tasks();
-    //         if let Err(e) = &schedule_result {
-    //             println!("Server {}: Task scheduling failed: {:?}", self.id, e);
-    //         }
-    //         schedule_result?;
-    //
-    //         // Post-scheduling state
-    //         if has_pending_tasks {
-    //             println!("Post-Schedule State:");
-    //             println!("  Pending Workers: {}", self.worker_queues.pending.len());
-    //             println!("  Running Workers: {}", self.worker_queues.running.len());
-    //         }
-    //
-    //         let mut events = [0u64; 6];
-    //
-    //         // Calculate timeout - reset to base timeout if we have work, otherwise increase
-    //         let timeout = if self.worker_queues.pending.len() > 0 || has_pending_tasks {
-    //             current_timeout = BASE_TIMEOUT_NS;
-    //             BASE_TIMEOUT_NS
-    //         } else {
-    //             current_timeout = (current_timeout * 2).min(MAX_TIMEOUT_NS);
-    //             current_timeout
-    //         };
-    //
-    //         // Pre-Wait State Logging
-    //         println!("\n=== Server {} Wait #{} ===", self.id, wait_stats.total_calls);
-    //         println!("Thread State:");
-    //         println!("  Thread ID: {}", thread_id);
-    //         println!("  Current CPU: {}", get_current_cpu());
-    //
-    //         println!("Queue State:");
-    //         println!("  Pending Workers: {}", self.worker_queues.pending.len());
-    //         println!("  Running Workers: {}", self.worker_queues.running.len());
-    //         println!("  Tasks Waiting: {}", has_pending_tasks);
-    //
-    //         println!("Wait History:");
-    //         println!("  Total Calls: {}", wait_stats.total_calls);
-    //         println!("  EAGAIN Count: {}", wait_stats.eagain_count);
-    //         println!("  Timeout Count: {}", wait_stats.timeout_count);
-    //         println!("  Consecutive Failures: {}", wait_stats.consecutive_failures);
-    //         println!("  Last Success: {:?} ago", wait_stats.last_successful_wait.map(|t| t.elapsed()));
-    //
-    //         // Calculate absolute timeout
-    //         let abs_timeout = SystemTime::now()
-    //             .duration_since(SystemTime::UNIX_EPOCH)
-    //             .unwrap()
-    //             .as_nanos() as u64 + timeout;
-    //
-    //         println!("Wait Configuration:");
-    //         println!("  Relative Timeout: {}ns", timeout);
-    //         println!("  Absolute Timeout: {}", abs_timeout);
-    //         println!("  Current Time: {}", SystemTime::now()
-    //             .duration_since(SystemTime::UNIX_EPOCH)
-    //             .unwrap()
-    //             .as_nanos());
-    //
-    //         // Make the UMCG Wait syscall
-    //         let syscall_start = Instant::now();
-    //         let ret = umcg_base::sys_umcg_ctl(
-    //             0,
-    //             UmcgCmd::Wait,
-    //             0,
-    //             abs_timeout,
-    //             Some(&mut events),
-    //             6
-    //         );
-    //         let syscall_duration = syscall_start.elapsed();
-    //         let errno = unsafe { *libc::__errno_location() };
-    //
-    //         // Log Wait results
-    //         println!("Wait Result:");
-    //         println!("  Return: {}", ret);
-    //         println!("  Duration: {:?}", syscall_duration);
-    //         println!("  Errno: {} ({})",
-    //                  errno,
-    //                  std::io::Error::from_raw_os_error(errno));
-    //
-    //         // Update statistics and handle specific errors
-    //         match errno {
-    //             0 => {
-    //                 wait_stats.consecutive_failures = 0;
-    //                 wait_stats.last_successful_wait = Some(Instant::now());
-    //             }
-    //             libc::EAGAIN => {
-    //                 wait_stats.eagain_count += 1;
-    //                 wait_stats.consecutive_failures += 1;
-    //                 println!("EAGAIN Diagnostics:");
-    //                 println!("  Process State: {}", get_process_state());
-    //                 println!("  Thread Count: {}", get_thread_count());
-    //                 println!("  FD Count: {}", count_open_fds());
-    //             }
-    //             libc::ETIMEDOUT => {
-    //                 wait_stats.timeout_count += 1;
-    //                 wait_stats.consecutive_failures += 1;
-    //             }
-    //             _ => {
-    //                 println!("Unexpected errno: {}", errno);
-    //                 print_detailed_error_info(errno);
-    //             }
-    //         }
-    //
-    //         if ret != 0 && errno != libc::ETIMEDOUT {
-    //             println!("Non-timeout error occurred:");
-    //             println!("  Error count: {}", wait_stats.consecutive_failures);
-    //             println!("  Error code: {} ({})",
-    //                      errno,
-    //                      std::io::Error::from_raw_os_error(errno));
-    //
-    //             // Print stack trace for non-timeout errors
-    //             println!("Stack trace at error:");
-    //             let bt = backtrace::Backtrace::new();
-    //             println!("{:?}", bt);
-    //
-    //             continue;
-    //         }
-    //
-    //         // Process any events we received
-    //         let event_count = events.iter().take_while(|&&e| e != 0).count();
-    //         if event_count > 0 {
-    //             println!("Processing {} events", event_count);
-    //             for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
-    //                 println!("Event {}: {:#x}", i, event);
-    //                 let event_type = event & umcg_base::UMCG_WORKER_EVENT_MASK;
-    //                 let worker_id = event >> umcg_base::UMCG_WORKER_ID_SHIFT;
-    //                 if !self.channels.contains_key(&worker_id) {
-    //                     continue;
-    //                 }
-    //                 println!("  Type: {}", event_type);
-    //                 println!("  Worker ID: {}", worker_id);
-    //
-    //                 if let Err(e) = self.handle_event(event) {
-    //                     println!("Event handling error: {}", e);
-    //                 }
-    //             }
-    //
-    //             // Log queue state after event processing
-    //             println!("Post-Event Processing State:");
-    //             println!("  Pending Workers: {}", self.worker_queues.pending.len());
-    //             println!("  Running Workers: {}", self.worker_queues.running.len());
-    //             println!("  Preempted Workers: {}", self.worker_queues.preempted.len());
-    //         }
-    //
-    //         // Log iteration completion
-    //         println!("Loop Iteration Complete:");
-    //         println!("  Total duration: {:?}", loop_start.elapsed());
-    //         println!("================\n");
-    //     }
-    //
-    //     println!("Server {} Event Loop Stats:", self.id);
-    //     println!("  Total wait calls: {}", wait_stats.total_calls);
-    //     println!("  EAGAIN errors: {}", wait_stats.eagain_count);
-    //     println!("  Timeouts: {}", wait_stats.timeout_count);
-    //     println!("  Last successful wait: {:?} ago", wait_stats.last_successful_wait.map(|t| t.elapsed()));
-    //
-    //     debug!("Server {}: Event loop terminated", self.id);
-    //     Ok(())
-    // }
-
     fn run_event_loop(&mut self) -> Result<(), ServerError> {
         debug!("Server {}: Starting event loop", self.id);
         let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
@@ -693,7 +490,13 @@ impl Server {
                 debug!("Server {}: Processing {} events", self.id, event_count);
                 for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
                     let event_type = event & UMCG_WORKER_EVENT_MASK;
-                    let worker_id = event >> UMCG_WORKER_ID_SHIFT;
+                    // let worker_id = event >> UMCG_WORKER_ID_SHIFT;
+                    let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
+                    if !self.channels.contains_key(&worker_id) {
+                        debug!("Server {}: Ignoring event {} for worker {} - not managed by this server",
+            self.id, event_type, worker_id);
+                        continue;
+                    }
                     debug!("Server {}: Event {}/{}: type {} for worker {} (raw: {:#x})",
                     self.id, i + 1, event_count, event_type, worker_id, event);
 
@@ -1831,12 +1634,11 @@ fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
     const WORKER_COUNT: usize = 10;
-    const SERVER_COUNT: usize = 1;  // Changed this to test multiple servers
+    const SERVER_COUNT: usize = 2;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
 
     // Create task queue and worker queues
     let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
-    let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
     let task_stats = TaskStats::new();
 
     // Create executor with initial configuration
@@ -1849,6 +1651,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     let wait = Arc::new(AtomicBool::new(true));
 
     for server_id in 0..SERVER_COUNT {
+        let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
         let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT);
 
         executor.initialize_server_and_setup_workers(
@@ -1887,7 +1690,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     debug!("Submitting initial tasks...");
 
     // Submit initial tasks that will spawn child tasks
-    for i in 0..6 {
+    for i in 0..12 {
         let parent_task_handle = task_handle.clone();
         let parent_id = i;
 
@@ -1989,7 +1792,6 @@ pub fn run_echo_server_demo() -> i32 {
 
     // Create task queue and worker queues
     let task_queue = Arc::new(TaskQueue::new(QUEUE_CAPACITY));
-    let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
     let task_stats = TaskStats::new();
     // TODO loop creating workers/server and wait for everything to be ready
 
@@ -2003,6 +1805,7 @@ pub fn run_echo_server_demo() -> i32 {
     let wait = Arc::new(AtomicBool::new(true));
 
     for server_id in 0..SERVER_COUNT {
+        let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
         let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT);
         let done = Arc::new(AtomicBool::new(false));
         let done_tcp = done.clone(); // Clone for TCP accept loop
