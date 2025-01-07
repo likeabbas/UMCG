@@ -1,6 +1,6 @@
 {
-  "Program": "target/x86_64-unknown-linux-musl/release/UMCG",
-  "Args": [],
+  "Program": "target/x86_64-unknown-linux-musl/debug/UMCG",
+  "Args": ["UMCG_DEBUG=1"],
   "Dirs": [],
   "Files": [],
   "Klibs": ["umcg"],
@@ -14,16 +14,22 @@
     "Memory": "2G",
     "CPUs": 8
   },
+  "Debugflags": ["trace:pf,threadrun,all", "debugsyscalls", "UMCG_DEBUG=1"],
   "ManifestPassthrough": {
     "consoles": ["+serial", "+net"],
     "load_klib": ["umcg"],
-    "log_level": "debug",
+    "log_level": "warn",
     "exec_wait_for_ip4_secs": "30",
     "en1": {
       "dhcp": "true",
       "exec_wait_for_ip4_secs": "30"
     },
-    "target": "umcg"
+    "target": "umcg",
+    "CFLAGS": "UMCG_DEBUG=1",
+    "trace:pf,threadrun,all": {},
+    "umcg": {
+      "UMCG_DEBUG": "1"
+    }
   },
   "NameServers": ["8.8.8.8"],
   "NanosVersion": "nightly"

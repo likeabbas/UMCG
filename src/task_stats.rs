@@ -1,10 +1,11 @@
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use dashmap::DashMap;
 use uuid::Uuid;
 
 static DEBUG_LOGGING: bool = true;
 
+// Keeping the same macro definitions
 macro_rules! info {
     ($($arg:tt)*) => {{
         log_with_timestamp(&format!($($arg)*));
@@ -32,7 +33,7 @@ fn log_with_timestamp(msg: &str) {
 
 #[derive(Default)]
 pub struct TaskStats {
-    pub completed_tasks: Arc<Mutex<HashMap<Uuid, bool>>>,
+    pub completed_tasks: Arc<DashMap<Uuid, bool>>,
     pub total_tasks: AtomicUsize,
     pub completed_count: AtomicUsize,
 }
@@ -40,24 +41,22 @@ pub struct TaskStats {
 impl TaskStats {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            completed_tasks: Arc::new(Mutex::new(HashMap::new())),
+            completed_tasks: Arc::new(DashMap::new()),
             total_tasks: AtomicUsize::new(0),
             completed_count: AtomicUsize::new(0),
         })
     }
 
     pub fn register_task(&self, task_id: Uuid) {
-        let mut tasks = self.completed_tasks.lock().unwrap();
-        tasks.insert(task_id, false);
+        self.completed_tasks.insert(task_id, false);
         self.total_tasks.fetch_add(1, Ordering::SeqCst);
         debug!("Registered task {}, total tasks: {}", task_id, self.total_tasks.load(Ordering::SeqCst));
     }
 
     pub fn mark_completed(&self, task_id: Uuid) {
-        let mut tasks = self.completed_tasks.lock().unwrap();
-        if let Some(completed) = tasks.get_mut(&task_id) {
-            if !*completed {
-                *completed = true;
+        if let Some(mut entry) = self.completed_tasks.get_mut(&task_id) {
+            if !*entry {
+                *entry = true;
                 self.completed_count.fetch_add(1, Ordering::SeqCst);
                 debug!("Completed task {}, total completed: {}/{}",
                     task_id,

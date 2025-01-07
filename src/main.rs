@@ -724,6 +724,8 @@ fn run_full_tests() {
     // test_server_first();
     println!("what the fuck");
     run_dynamic_task_attempt2_demo();
+    // println!("done what the fuck");
+    // thread::sleep(Duration::from_secs(10));
     // run_echo_server_demo();
 
     // println!("Running run_dynamic_task_demo");
@@ -751,6 +753,8 @@ fn run_full_tests() {
 
 fn main() {
     std::env::set_var("RUST_BACKTRACE", "full");
+    println!("cargo:rustc-cfg=UMCG_DEBUG"); // Enables `#[cfg(UMCG_DEBUG)]` in your code
+    println!("cargo:rustc-env=CFLAGS=-DUMCG_DEBUG"); // Passes the macro to the C compiler
 
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {

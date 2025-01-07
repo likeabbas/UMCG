@@ -95,7 +95,7 @@ pub fn sys_umcg_ctl(
     events: Option<&mut [u64]>,
     event_sz: i32,
 ) -> i32 {
-    debug!("UMCG syscall - cmd: {:?}, tid: {}, flags: {}", cmd, next_tid, flags);
+    // debug!("UMCG syscall - cmd: {:?}, tid: {}, flags: {}", cmd, next_tid, flags);
     let result = unsafe {
         syscall(
             SYS_UMCG_CTL,
@@ -107,7 +107,7 @@ pub fn sys_umcg_ctl(
             event_sz as i64,
         ) as i32
     };
-    debug!("UMCG syscall result: {}", result);
+    // debug!("UMCG syscall result: {}", result);
     result
 }
 
@@ -132,37 +132,67 @@ pub fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event
     }
 }
 
-pub fn umcg_wait_retry_timeout(worker_id: u64, mut events_buf: Option<&mut [u64]>, event_sz: i32, timeout_ns: u64) -> i32 {
-    let mut flags = 0;
+#[derive(Debug)]
+pub enum WaitResult {
+    Events(i32),          // Got events, here's the syscall result
+    ProcessForwarded,     // Check forwarded events
+    Timeout,              // Regular timeout
+    ResourceBusy,         // Got EAGAIN, should back off
+}
 
-    // Calculate absolute timeout from relative timeout
+pub fn umcg_wait_retry_timeout(
+    worker_id: u64,
+    mut events_buf: Option<&mut [u64]>,
+    event_sz: i32,
+    timeout_ns: u64,
+    debug_count: u64,  // Current count
+    debug_hash: u64,   // Print debug if count % hash == 0
+) -> WaitResult {
+    let mut flags = 0;
+    let should_debug = debug_count % debug_hash == 0;
+
+    // Calculate absolute timeout
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
     let abs_timeout = now.as_nanos() as u64 + timeout_ns;
 
-    loop {
+    if should_debug {
         debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {}, timeout: {} ns !!!!!!!!!!",
             worker_id, flags, timeout_ns);
-        let events = events_buf.as_deref_mut();
-        let ret = sys_umcg_ctl(
-            flags,
-            UmcgCmd::Wait,
-            (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
-            abs_timeout,
-            events,
-            event_sz,
-        );
+    }
+
+    let events = events_buf.as_deref_mut();
+    let ret = sys_umcg_ctl(
+        flags,
+        UmcgCmd::Wait,
+        (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
+        abs_timeout,
+        events,
+        event_sz,
+    );
+
+    if should_debug {
         debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
+    }
 
-        // If we got EINTR and it wasn't a timeout, retry with interrupted flag
-        let errno = unsafe { *libc::__errno_location() };
-        if ret == -1 && errno == EINTR && errno != libc::ETIMEDOUT {
-            flags = UMCG_WAIT_FLAG_INTERRUPTED;
-            continue;
+    let errno = unsafe { *libc::__errno_location() };
+
+    if ret == 0 {
+        return WaitResult::Events(ret);
+    }
+
+    match errno {
+        libc::ETIMEDOUT => WaitResult::Timeout,
+        libc::EAGAIN => WaitResult::ResourceBusy,
+        libc::EINTR => {
+            if errno != libc::ETIMEDOUT {
+                flags = UMCG_WAIT_FLAG_INTERRUPTED;
+                WaitResult::ProcessForwarded
+            } else {
+                WaitResult::Timeout
+            }
         }
-
-        // For any other result (including timeout), return immediately
-        return ret;
+        _ => WaitResult::Events(ret)
     }
 }

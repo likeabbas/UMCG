@@ -80,7 +80,8 @@ pub enum ServerError {
     },
     // ContextSwitchFailed,
     QueueFull,
-    NoServerFound
+    NoServerFound,
+    LockError,
 }
 
 impl std::fmt::Display for ServerError {
@@ -103,6 +104,7 @@ impl std::fmt::Display for ServerError {
             // Self::ContextSwitchFailed => write!(f, "Context switch failed"),
             Self::QueueFull => write!(f, "Queue is full"),
             Self::NoServerFound => write!(f, "No server found"),
+            Self::LockError => write!(f, "Lock error"),
         }
     }
 }
