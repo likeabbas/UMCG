@@ -2242,8 +2242,8 @@ impl ServerRouter {
 }
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
-    const WORKER_COUNT: usize = 3;
-    const SERVER_COUNT: usize = 2;  // Changed this to test multiple servers
+    const WORKER_COUNT: usize = 2;
+    const SERVER_COUNT: usize = 4;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
 
     // Create task queue and worker queues
@@ -2301,7 +2301,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     debug!("Submitting initial tasks...");
 
     // Submit initial tasks that will spawn child tasks
-    for i in 0..6 {
+    for i in 0..10 {
         let parent_task_handle = task_handle.clone();
         let parent_id = i;
 
