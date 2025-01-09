@@ -2242,7 +2242,7 @@ impl ServerRouter {
 }
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
-    const WORKER_COUNT: usize = 2;
+    const WORKER_COUNT: usize = 3;
     const SERVER_COUNT: usize = 2;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
 

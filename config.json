@@ -3,18 +3,18 @@
   "Args": ["UMCG_DEBUG=1"],
   "Dirs": [],
   "Files": [],
-  "Klibs": ["umcg"],
+  "Klibs": ["umcg-manual-debug"],
   "KlibDir": "/root/.ops/0.1.52/klibs",
   "RunConfig": {
     "Ports": ["8080"],
     "ShowDebug": true,
     "ShowErrors": true,
     "ShowWarnings": true,
-    "Verbose": true,
+    "Verbose": false,
     "Memory": "2G",
     "CPUs": 8
   },
-  "Debugflags": ["trace:pf,threadrun,all", "debugsyscalls", "UMCG_DEBUG=1"],
+  "Debugflags": [],
   "ManifestPassthrough": {
     "consoles": ["+serial", "+net"],
     "load_klib": ["umcg"],
@@ -24,12 +24,7 @@
       "dhcp": "true",
       "exec_wait_for_ip4_secs": "30"
     },
-    "target": "umcg",
-    "CFLAGS": "UMCG_DEBUG=1",
-    "trace:pf,threadrun,all": {},
-    "umcg": {
-      "UMCG_DEBUG": "1"
-    }
+    "target": "umcg"
   },
   "NameServers": ["8.8.8.8"],
   "NanosVersion": "nightly"
