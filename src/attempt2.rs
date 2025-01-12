@@ -402,7 +402,7 @@ impl EventRoutingServer {
 
 struct Server {
     id: usize,
-    states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+    states: Arc<HashMap<u64, WorkerStatus>>,
     channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
     manage_tasks: Arc<dyn ManageTask>,
     worker_queues: Arc<WorkerQueues>,
@@ -416,7 +416,7 @@ struct Server {
 impl Server {
     pub fn new(
         id: usize,
-        states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+        states: Arc<HashMap<u64, WorkerStatus>>,
         channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
         manage_tasks: Arc<dyn ManageTask>,
         worker_queues: Arc<WorkerQueues>,
@@ -720,7 +720,7 @@ impl Server {
         let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
         log_cpu_affinity(self.id);
 
-        const DEBUG_HASH: u64 = 100;
+        const DEBUG_HASH: u64 = 100000;
         const MAX_EVENTS_PER_BATCH: usize = 32; // We can adjust this batch size
         let mut debug_counter: u64 = 0;
         let mut event_buffer = [0u64; MAX_EVENTS_PER_BATCH];
@@ -728,14 +728,14 @@ impl Server {
         while !self.done.load(Ordering::Relaxed) {
             let mut print_debug = false;
             if debug_counter % DEBUG_HASH == 0 {
-                // debug!("Server {} state dump:", self.id);
-                // debug!("  Pending queue size: {}", self.worker_queues.pending.len());
-                // debug!("  Running queue size: {}", self.worker_queues.running.len());
-                // for (worker_id, status) in self.states.iter() {
-                //     let status = status.lock().unwrap();
-                //     debug!("  Worker {}: {:?}", worker_id, *status);
-                // }
-                // debug!("Pending Task Queue size: {}", self.manage_tasks.num_pending_tasks());
+                debug!("Server {} state dump:", self.id);
+                debug!("  Pending queue size: {}", self.worker_queues.pending.len());
+                debug!("  Running queue size: {}", self.worker_queues.running.len());
+                for (worker_id, status) in self.states.iter() {
+                    let status = status.lock().unwrap();
+                    debug!("  Worker {}: {:?}", worker_id, *status);
+                }
+                debug!("Pending Task Queue size: {}", self.manage_tasks.num_pending_tasks());
                 print_debug = true;
             }
 
@@ -782,13 +782,13 @@ impl Server {
     }
 
     fn try_schedule_tasks(&self, print_debug: bool) -> Result<(), ServerError> {
-        // if print_debug {
-        //     debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS TO SCHEDULE !!!!!!!!!!");
-        //     debug!("!!!! TRY_SCHEDULE: Checking pending queue size: {} !!!!",
-        //     self.worker_queues.pending.len());
-        //     debug!("!!!! TRY_SCHEDULE: Checking running queue size: {} !!!!",
-        //     self.worker_queues.running.len());
-        // }
+        if print_debug {
+            debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS TO SCHEDULE !!!!!!!!!!");
+            debug!("!!!! TRY_SCHEDULE: Checking pending queue size: {} !!!!",
+            self.worker_queues.pending.len());
+            debug!("!!!! TRY_SCHEDULE: Checking running queue size: {} !!!!",
+            self.worker_queues.running.len());
+        }
 
         // Keep trying while we have pending workers
         while let Some(worker_id) = self.worker_queues.pending.pop() {
@@ -870,7 +870,7 @@ impl Server {
                                 self.id, switch_ret, worker_id, tracked_task.id);
 
                                 // Process context switch events
-                                for &event in switch_events.iter().take(2) {
+                                for &event in switch_events.iter().take_while(|&&e| e != 0) {
                                     // for &event in switch_events.iter().take_while(|&&e| e != 0) {
                                     debug!("Server {}: Got event {:?} from context switch while running task {}",
                                     self.id, UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK), tracked_task.id);
@@ -999,7 +999,7 @@ impl Server {
                         debug!("Server {}: Context switch for unblocked worker {} returned {}",
                         self.id, worker_id, switch_ret);
 
-                        for &event in switch_events.iter().take(2) {
+                        for &event in switch_events.iter().take_while(|&&e| e != 0) {
                             debug!("Server {}: Got event {:?} from context switch in handle_event", self.id, UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK));
                             self.handle_event(event)?;
                             // TODO: see if this doesn't work
@@ -1305,7 +1305,7 @@ impl Executor {
     pub fn initialize_server_and_setup_workers(
         &mut self,
         server_id: usize,
-        states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+        states: Arc<HashMap<u64, WorkerStatus>>,
         channels: Arc<HashMap<u64, Sender<WorkerTask>>>,
         worker_queues: Arc<WorkerQueues>,
         manage_tasks: Arc<dyn ManageTask>,
@@ -1329,8 +1329,54 @@ impl Executor {
         server.start_server(wait);
     }
 
-    pub fn initialize_workers(&mut self,  cpu_id: usize, worker_count: usize, router: Arc<ServerRouter>) -> (
-        Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+    // pub fn initialize_workers(&mut self,  cpu_id: usize, worker_count: usize, router: Arc<ServerRouter>) -> (
+    //     Arc<HashMap<u64, Mutex<WorkerStatus>>>,
+    //     Arc<HashMap<u64, Sender<WorkerTask>>>,
+    // ) {
+    //     let worker_states = Arc::new(Mutex::new(HashMap::<u64, Mutex<WorkerStatus>>::new()));
+    //     let worker_channels = Arc::new(Mutex::new(HashMap::<u64, Sender<WorkerTask>>::new()));
+    //
+    //     // Spawn all workers
+    //     for worker_id in 0..worker_count {
+    //         let handle = Worker::spawn(
+    //             worker_id,
+    //             cpu_id,
+    //             Arc::clone(&worker_states),
+    //             Arc::clone(&worker_channels),
+    //             router.clone(),
+    //             cpu_id,
+    //         );
+    //
+    //         self.worker_handles.push(handle);
+    //     }
+    //
+    //     // Give workers time to initialize
+    //     // TODO: change this to a loop
+    //     std::thread::sleep(std::time::Duration::from_millis(3000));
+    //
+    //     // Create final non-mutex wrapped HashMaps
+    //     let final_states: HashMap<u64, Mutex<WorkerStatus>> =
+    //         worker_states.lock().unwrap()
+    //             .iter()
+    //             .map(|(tid, status)| {
+    //                 let status_value = status.lock().unwrap().clone();
+    //                 (*tid, Mutex::new(status_value))
+    //             })
+    //             .collect();
+    //
+    //     let final_channels: HashMap<u64, Sender<WorkerTask>> =
+    //         worker_channels.lock().unwrap()
+    //             .iter()
+    //             .map(|(tid, channel)| {
+    //                 (*tid, channel.clone())
+    //             })
+    //             .collect();
+    //
+    //     (Arc::new(final_states), Arc::new(final_channels))
+    // }
+
+    pub fn initialize_workers(&mut self, cpu_id: usize, worker_count: usize, router: Arc<ServerRouter>) -> (
+        Arc<HashMap<u64, WorkerStatus>>,
         Arc<HashMap<u64, Sender<WorkerTask>>>,
     ) {
         let worker_states = Arc::new(Mutex::new(HashMap::<u64, Mutex<WorkerStatus>>::new()));
@@ -1350,20 +1396,38 @@ impl Executor {
             self.worker_handles.push(handle);
         }
 
-        // Give workers time to initialize
-        // TODO: change this to a loop
-        std::thread::sleep(std::time::Duration::from_millis(3000));
+        // First wait for all workers to register
+        loop {
+            let states_guard = worker_states.lock().unwrap();
+            if states_guard.len() == worker_count {
+                break;
+            }
+            drop(states_guard);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
-        // Create final non-mutex wrapped HashMaps
-        let final_states: HashMap<u64, Mutex<WorkerStatus>> =
+        // Then wait for all workers to reach Waiting state
+        loop {
+            let states_guard = worker_states.lock().unwrap();
+            if states_guard.iter().all(|(_, status)| {
+                matches!(*status.lock().unwrap(), WorkerStatus::Waiting)
+            }) {
+                break;
+            }
+            drop(states_guard);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Create final lock-free states HashMap
+        let final_states: HashMap<u64, WorkerStatus> =
             worker_states.lock().unwrap()
                 .iter()
                 .map(|(tid, status)| {
-                    let status_value = status.lock().unwrap().clone();
-                    (*tid, Mutex::new(status_value))
+                    (*tid, status.lock().unwrap().clone())
                 })
                 .collect();
 
+        // Create final channels HashMap
         let final_channels: HashMap<u64, Sender<WorkerTask>> =
             worker_channels.lock().unwrap()
                 .iter()
@@ -1750,30 +1814,30 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
             wait.clone(),
         );
 
-        let mut all_workers_ready = false;
-        while !all_workers_ready {
-            let ready_workers: Vec<u64> = states.iter()
-                .filter_map(|(worker_id, state)| {
-                    let state = state.lock().unwrap();
-                    if *state == WorkerStatus::Waiting {
-                        Some(*worker_id)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            all_workers_ready = ready_workers.len() == WORKER_COUNT;
-
-            if all_workers_ready {
-                // Add worker->server mappings for ready workers
-                for worker_id in ready_workers {
-                    worker_to_server.insert(worker_id, server_id as u64);
-                }
-            } else {
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
+        // let mut all_workers_ready = false;
+        // while !all_workers_ready {
+        //     let ready_workers: Vec<u64> = states.iter()
+        //         .filter_map(|(worker_id, state)| {
+        //             let state = state.lock().unwrap();
+        //             if *state == WorkerStatus::Waiting {
+        //                 Some(*worker_id)
+        //             } else {
+        //                 None
+        //             }
+        //         })
+        //         .collect();
+        //
+        //     all_workers_ready = ready_workers.len() == WORKER_COUNT;
+        //
+        //     if all_workers_ready {
+        //         // Add worker->server mappings for ready workers
+        //         for worker_id in ready_workers {
+        //             worker_to_server.insert(worker_id, server_id as u64);
+        //         }
+        //     } else {
+        //         thread::sleep(Duration::from_millis(10));
+        //     }
+        // }
 
         // todo when workers ready, populate mut EventRoutingServer hashmap of worker to server id
     }
@@ -1941,30 +2005,30 @@ pub fn run_echo_server_demo() -> i32 {
             wait.clone(),
         );
 
-        let mut all_workers_ready = false;
-        while !all_workers_ready {
-            let ready_workers: Vec<u64> = states.iter()
-                .filter_map(|(worker_id, state)| {
-                    let state = state.lock().unwrap();
-                    if *state == WorkerStatus::Waiting {
-                        Some(*worker_id)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            all_workers_ready = ready_workers.len() == WORKER_COUNT;
-
-            if all_workers_ready {
-                // Add worker->server mappings for ready workers
-                for worker_id in ready_workers {
-                    worker_to_server.insert(worker_id, server_id as u64);
-                }
-            } else {
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
+        // let mut all_workers_ready = false;
+        // while !all_workers_ready {
+        //     let ready_workers: Vec<u64> = states.iter()
+        //         .filter_map(|(worker_id, state)| {
+        //             let state = state.lock().unwrap();
+        //             if *state == WorkerStatus::Waiting {
+        //                 Some(*worker_id)
+        //             } else {
+        //                 None
+        //             }
+        //         })
+        //         .collect();
+        //
+        //     all_workers_ready = ready_workers.len() == WORKER_COUNT;
+        //
+        //     if all_workers_ready {
+        //         // Add worker->server mappings for ready workers
+        //         for worker_id in ready_workers {
+        //             worker_to_server.insert(worker_id, server_id as u64);
+        //         }
+        //     } else {
+        //         thread::sleep(Duration::from_millis(10));
+        //     }
+        // }
     }
 
     let event_routing_server_id = SERVER_COUNT as u64; // equal to server count so it's N + 1
