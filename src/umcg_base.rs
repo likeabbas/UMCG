@@ -64,6 +64,20 @@ pub enum UmcgEventType {
     Preempt,
 }
 
+impl UmcgEventType {
+    pub fn from_u64(value: u64) -> Option<UmcgEventType> {
+        match value {
+            1 => Some(UmcgEventType::Block),
+            2 => Some(UmcgEventType::Wake),
+            3 => Some(UmcgEventType::Wait),
+            4 => Some(UmcgEventType::Exit),
+            5 => Some(UmcgEventType::Timeout),
+            6 => Some(UmcgEventType::Preempt),
+            _ => None
+        }
+    }
+}
+
 pub fn get_thread_id() -> pid_t {
     unsafe { syscall(SYS_gettid) as pid_t }
 }

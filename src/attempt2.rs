@@ -378,8 +378,7 @@ impl EventRoutingServer {
                 for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
                     let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
                     let server_id = self.worker_to_server[&worker_id];
-                    debug!("EventRoutingServer: Got event {} (type {}) for worker {} (raw event: {:#x})", i, event & UMCG_WORKER_EVENT_MASK, worker_id, event);
-                    debug!("EventRoutingServer: Routing worker {} to server {}", worker_id, server_id);
+                    debug!("EventRoutingServer: Routing {:?} event for worker {} to server {} (raw: {:#x})", UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK).unwrap_or(UmcgEventType::Exit), worker_id, server_id, event);
 
                     if let Some(producer) = self.server_sender.get_mut(&server_id) {
                         match producer.try_push(event) {
@@ -871,9 +870,10 @@ impl Server {
                                 self.id, switch_ret, worker_id, tracked_task.id);
 
                                 // Process context switch events
-                                for &event in switch_events.iter().take_while(|&&e| e != 0) {
-                                    debug!("Server {}: Got event {} from context switch while running task {}",
-                                    self.id, event, tracked_task.id);
+                                for &event in switch_events.iter().take(2) {
+                                    // for &event in switch_events.iter().take_while(|&&e| e != 0) {
+                                    debug!("Server {}: Got event {:?} from context switch while running task {}",
+                                    self.id, UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK), tracked_task.id);
                                     self.handle_event(event)?;
                                     // TODO: see if this doesn't work
                                     break;
@@ -999,8 +999,8 @@ impl Server {
                         debug!("Server {}: Context switch for unblocked worker {} returned {}",
                         self.id, worker_id, switch_ret);
 
-                        for &event in switch_events.iter().take_while(|&&e| e != 0) {
-                            debug!("Server {}: Got event {} from context switch in handle_event", self.id, event);
+                        for &event in switch_events.iter().take(2) {
+                            debug!("Server {}: Got event {:?} from context switch in handle_event", self.id, UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK));
                             self.handle_event(event)?;
                             // TODO: see if this doesn't work
                             break;
