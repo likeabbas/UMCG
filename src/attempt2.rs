@@ -728,7 +728,7 @@ impl Server {
 
         while !self.done.load(Ordering::Relaxed) {
             let mut print_debug = false;
-            if debug_counter % 1000000 == 0 {
+            if debug_counter % DEBUG_HASH == 0 {
                 // debug!("Server {} state dump:", self.id);
                 // debug!("  Pending queue size: {}", self.worker_queues.pending.len());
                 // debug!("  Running queue size: {}", self.worker_queues.running.len());
@@ -741,7 +741,7 @@ impl Server {
             }
 
             // Increment and possibly reset debug counter
-            debug_counter = debug_counter.wrapping_add(1);
+            debug_counter = debug_counter + 1;
             if debug_counter % DEBUG_HASH == 0 {
                 debug_counter = 0;
             }
@@ -756,14 +756,14 @@ impl Server {
             for &event in event_buffer.iter().take(count) {
                 let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
 
-                if debug_counter % DEBUG_HASH == 0 {
+                // if debug_counter % DEBUG_HASH == 0 {
                     debug!("Server {}: Processing event type {} for worker {} (raw: {:#x})",
                     self.id,
                     event & UMCG_WORKER_EVENT_MASK,
                     worker_id,
                     event
                 );
-                }
+                // }
 
                 // Verify this event is for one of our workers
                 if !self.channels.contains_key(&worker_id) {
@@ -871,25 +871,25 @@ impl Server {
                                 self.id, switch_ret, worker_id, tracked_task.id);
 
                                 // Process context switch events
-                                // for &event in switch_events.iter().take_while(|&&e| e != 0) {
-                                //     debug!("Server {}: Got event {} from context switch while running task {}",
-                                //     self.id, event, tracked_task.id);
-                                //     self.handle_event(event)?;
-                                //     // TODO: see if this doesn't work
-                                //     break;
-                                // }
-
                                 for &event in switch_events.iter().take_while(|&&e| e != 0) {
-                                    let event_type = event & UMCG_WORKER_EVENT_MASK;
-                                    debug!("Server {}: Got event {} (type {}) from context switch while running task {}",
-           self.id, event, event_type, tracked_task.id);
-
-                                    if event_type != UmcgEventType::Wake as u64 {
-                                        self.handle_event(event)?;
-                                    } else {
-                                        debug!("Server {}: Ignoring non-BLOCK event {} from context switch", self.id, event);
-                                    }
+                                    debug!("Server {}: Got event {} from context switch while running task {}",
+                                    self.id, event, tracked_task.id);
+                                    self.handle_event(event)?;
+                                    // TODO: see if this doesn't work
+                                    break;
                                 }
+
+           //                      for &event in switch_events.iter().take_while(|&&e| e != 0) {
+           //                          let event_type = event & UMCG_WORKER_EVENT_MASK;
+           //                          debug!("Server {}: Got event {} (type {}) from context switch while running task {}",
+           // self.id, event, event_type, tracked_task.id);
+           //
+           //                          if event_type != UmcgEventType::Wake as u64 {
+           //                              self.handle_event(event)?;
+           //                          } else {
+           //                              debug!("Server {}: Ignoring non-BLOCK event {} from context switch", self.id, event);
+           //                          }
+           //                      }
                             } else {
                                 error!("Server {}: Failed to send task {} to worker {}",
                                 self.id, tracked_task.id, worker_id);
@@ -999,20 +999,27 @@ impl Server {
                         debug!("Server {}: Context switch for unblocked worker {} returned {}",
                         self.id, worker_id, switch_ret);
 
-                        // Process any events from the context switch
-                        for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
-                            let event_type = switch_event & UMCG_WORKER_EVENT_MASK;
-                            debug!("Server {}: Got event {} (type {}) from unblock context switch",
-           self.id, switch_event, event_type);
-
-                            // Only handle BLOCK events (type 1) from context switch
-                            if event_type != UmcgEventType::Wake as u64 {
-                                self.handle_event(switch_event)?;
-                            } else {
-                                debug!("Server {}: Ignoring non-BLOCK event {} from unblock context switch",
-               self.id, switch_event);
-                            }
+                        for &event in switch_events.iter().take_while(|&&e| e != 0) {
+                            debug!("Server {}: Got event {} from context switch in handle_event", self.id, event);
+                            self.handle_event(event)?;
+                            // TODO: see if this doesn't work
+                            break;
                         }
+
+                        // Process any events from the context switch
+           //              for &switch_event in switch_events.iter().take_while(|&&e| e != 0) {
+           //                  let event_type = switch_event & UMCG_WORKER_EVENT_MASK;
+           //                  debug!("Server {}: Got event {} (type {}) from unblock context switch",
+           // self.id, switch_event, event_type);
+           //
+           //                  // Only handle BLOCK events (type 1) from context switch
+           //                  if event_type != UmcgEventType::Wake as u64 {
+           //                      self.handle_event(switch_event)?;
+           //                  } else {
+           //                      debug!("Server {}: Ignoring non-BLOCK event {} from unblock context switch",
+           //     self.id, switch_event);
+           //                  }
+           //              }
 
                     },
                     _ => debug!("Server {}: Unexpected WAKE for worker {} in state {:?}",
