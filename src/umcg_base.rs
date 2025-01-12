@@ -133,6 +133,43 @@ pub fn umcg_wait_retry(worker_id: u64, mut events_buf: Option<&mut [u64]>, event
 }
 
 #[derive(Debug)]
+pub enum WaitNoTimeoutResult {
+    Events(i32),          // Got events, here's the syscall result
+    ProcessForwarded,     // Check forwarded events
+    ResourceBusy,         // Got EAGAIN, should back off
+}
+
+pub fn umcg_wait_retry_simple(
+    worker_id: u64,
+    mut events_buf: Option<&mut [u64]>,
+    event_sz: i32,
+) -> WaitNoTimeoutResult {
+    let flags = 0;
+
+    let events = events_buf.as_deref_mut();
+    let ret = sys_umcg_ctl(
+        flags,
+        UmcgCmd::Wait,
+        (worker_id >> UMCG_WORKER_ID_SHIFT) as pid_t,
+        0, // No timeout
+        events,
+        event_sz,
+    );
+
+    let errno = unsafe { *libc::__errno_location() };
+
+    if ret == 0 {
+        return WaitNoTimeoutResult::Events(ret);
+    }
+
+    match errno {
+        libc::EAGAIN => WaitNoTimeoutResult::ResourceBusy,
+        libc::EINTR => WaitNoTimeoutResult::ProcessForwarded,
+        _ => WaitNoTimeoutResult::Events(ret)
+    }
+}
+
+#[derive(Debug)]
 pub enum WaitResult {
     Events(i32),          // Got events, here's the syscall result
     ProcessForwarded,     // Check forwarded events

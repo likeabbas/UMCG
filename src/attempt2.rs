@@ -9,13 +9,16 @@ use std::thread::{self, JoinHandle};
 use std::sync::mpsc::{channel, Sender, Receiver, TryRecvError};
 use log::error;
 use crate::{umcg_base, ServerError};
-use crate::umcg_base::{umcg_wait_retry_timeout, UmcgCmd, UmcgEventType, WaitResult, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
+use crate::umcg_base::{umcg_wait_retry_simple, umcg_wait_retry_timeout, UmcgCmd, UmcgEventType, WaitNoTimeoutResult, WaitResult, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
 use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
+use std::ops::Deref;
 use std::os::unix::io::AsRawFd;
 use std::panic;
 use backtrace::Backtrace;
 use dashmap::DashMap;
+use ringbuf::producer::Producer;
+use ringbuf::{traits::*, HeapRb};
 
 macro_rules! info {
     ($($arg:tt)*) => {{
@@ -301,6 +304,97 @@ impl ContextSwitchMetrics {
     }
 }
 
+struct EventRoutingServer {
+    id: usize,
+    worker_to_server: HashMap<u64, u64>,
+    server_sender: HashMap<u64, ringbuf::HeapProd<u64>>,
+    done: Arc<AtomicBool>
+}
+
+impl EventRoutingServer {
+    pub fn new(
+        id: usize,
+        worker_to_server: HashMap<u64, u64>,
+        server_sender: HashMap<u64, ringbuf::HeapProd<u64>>,
+        done: Arc<AtomicBool>
+    ) -> Self {
+        Self { id, worker_to_server, server_sender, done }
+    }
+
+    fn start(mut self, wait: Arc<AtomicBool>) -> JoinHandle<()> {
+        thread::spawn(move || {
+            debug!("Starting server {}", self.id);
+            // Set CPU affinity for this server thread
+            if let Err(e) = set_cpu_affinity(self.id) {
+                debug!("Failed to set CPU affinity for server {}: {}", self.id, e);
+            } else {
+                debug!("Server {} CPU affinity set to CPU {}", self.id, self.id);
+            }
+
+            // Register server with UMCG
+            let reg_result = unsafe {
+                libc::syscall(
+                    SYS_UMCG_CTL as i64,
+                    0,
+                    UmcgCmd::RegisterServer as i64,
+                    0,
+                    0,
+                    std::ptr::null_mut::<u64>() as i64,
+                    0
+                )
+            };
+
+            if reg_result == 0 {
+                debug!("Server {}: UMCG registration complete", self.id);
+            } else {
+                debug!("Server {}: UMCG registration failed: {}", self.id, reg_result);
+                return;
+            }
+
+            while !self.done.load(Ordering::Relaxed) {
+                let mut events = [0u64; 10];
+
+                match umcg_wait_retry_simple(
+                    0,
+                    Some(&mut events),
+                    10i32,
+                ) {
+                    WaitNoTimeoutResult::Events(ret) => {
+                        if ret != 0 {
+                            let errno = unsafe { *libc::__errno_location() };
+                            debug!("Server {}: Wait failed with error {} ({})", self.id, ret, std::io::Error::from_raw_os_error(errno));
+                            continue;
+                        }
+                    }
+                    WaitNoTimeoutResult::ProcessForwarded => {
+                        continue;
+                    }
+                    WaitNoTimeoutResult::ResourceBusy => {
+                        continue;
+                    }
+                }
+
+                for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
+                    let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
+                    let server_id = self.worker_to_server[&worker_id];
+                    if let Some(producer) = self.server_sender.get_mut(&server_id) {
+                        match producer.try_push(event) {
+                            Ok(()) => {
+                                // Push succeeded
+                            }
+                            Err(push_error) => {
+                                // Honestly we should try to avoid this scenario whenever possible
+                                // Handle the error (buffer full)
+                                // push_error.0 will contain the value that failed to be pushed
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
 struct Server {
     id: usize,
     states: Arc<HashMap<u64, Mutex<WorkerStatus>>>,
@@ -470,226 +564,6 @@ impl Server {
         })
     }
 
-    // fn run_event_loop(&mut self) -> Result<(), ServerError> {
-    //     debug!("Server {}: Starting event loop", self.id);
-    //     let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
-    //     log_cpu_affinity(self.id);
-    //
-    //     while !self.done.load(Ordering::Relaxed) {
-    //         // Try to schedule any pending tasks first
-    //         let has_pending_tasks = self.manage_tasks.has_pending_tasks();
-    //         if has_pending_tasks {
-    //             println!("Server {}: Attempting to schedule pending tasks", self.id);
-    //             println!("Pre-Schedule State:");
-    //             println!("  Pending Workers: {}", self.worker_queues.pending.len());
-    //             println!("  Running Workers: {}", self.worker_queues.running.len());
-    //             println!("  Has Tasks: {}", has_pending_tasks);
-    //
-    //             if let Err(e) = self.try_schedule_tasks() {
-    //                 println!("Server {}: Task scheduling failed: {:?}", self.id, e);
-    //             }
-    //         }
-    //
-    //         let mut events = [0u64; EVENT_BUFFER_SIZE];
-    //         debug!("Server {}: Waiting for events with retry", self.id);
-    //
-    //         // Use umcg_wait_retry instead of direct syscall
-    //         let ret = umcg_base::umcg_wait_retry(0, Some(&mut events), EVENT_BUFFER_SIZE as i32);
-    //
-    //         if ret != 0 {
-    //             let errno = unsafe { *libc::__errno_location() };
-    //             if errno != libc::ETIMEDOUT {
-    //                 debug!("Server {}: Wait failed with error {} ({})",
-    //                 self.id, ret, std::io::Error::from_raw_os_error(errno));
-    //                 continue;
-    //             }
-    //         }
-    //
-    //         // Process any events we received
-    //         let event_count = events.iter().take_while(|&&e| e != 0).count();
-    //         if event_count > 0 {
-    //             debug!("Server {}: Processing {} events", self.id, event_count);
-    //             for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
-    //                 let event_type = event & UMCG_WORKER_EVENT_MASK;
-    //                 // let worker_id = event >> UMCG_WORKER_ID_SHIFT;
-    //                 let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
-    //                 if !self.channels.contains_key(&worker_id) {
-    //                     debug!("Server {}: Ignoring event {} for worker {} - not managed by this server",
-    //         self.id, event_type, worker_id);
-    //                     continue;
-    //                 }
-    //                 debug!("Server {}: Event {}/{}: type {} for worker {} (raw: {:#x})",
-    //                 self.id, i + 1, event_count, event_type, worker_id, event);
-    //
-    //                 if let Err(e) = self.handle_event(event) {
-    //                     debug!("Server {}: Event handling error: {}", self.id, e);
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    // fn run_event_loop(&mut self) -> Result<(), ServerError> {
-    //     debug!("Server {}: Starting event loop", self.id);
-    //     let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
-    //     log_cpu_affinity(self.id);
-    //
-    //     while !self.done.load(Ordering::Relaxed) {
-    //         // Process any forwarded events first
-    //         while let Some(event) = self.queue.pop_event() {
-    //             debug!("Server {}: Processing forwarded event {}", self.id, event);
-    //             self.handle_event(event)?;
-    //         }
-    //
-    //         // Try to schedule any pending tasks
-    //         let has_pending_tasks = self.manage_tasks.has_pending_tasks();
-    //         if has_pending_tasks {
-    //             if let Err(e) = self.try_schedule_tasks() {
-    //                 debug!("Server {}: Task scheduling failed: {:?}", self.id, e);
-    //             }
-    //         }
-    //
-    //         let mut events = [0u64; EVENT_BUFFER_SIZE];
-    //         debug!("Server {}: Waiting for events with retry", self.id);
-    //
-    //         let ret = umcg_base::umcg_wait_retry_timeout(0, Some(&mut events), EVENT_BUFFER_SIZE as i32, 1_000_000);
-    //
-    //         if ret != 0 {
-    //             let errno = unsafe { *libc::__errno_location() };
-    //             if errno != libc::ETIMEDOUT {
-    //                 debug!("Server {}: Wait failed with error {} ({})",
-    //                     self.id, ret, std::io::Error::from_raw_os_error(errno));
-    //                 continue;
-    //             }
-    //         }
-    //
-    //         // Process received events
-    //         let event_count = events.iter().take_while(|&&e| e != 0).count();
-    //         if event_count > 0 {
-    //             debug!("Server {}: Processing {} events", self.id, event_count);
-    //             for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
-    //                 let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
-    //
-    //                 // Check if this event is for one of our workers
-    //                 if !self.channels.contains_key(&worker_id) {
-    //                     debug!("Server {}: Forwarding event {} for worker {} to correct server",
-    //                         self.id, event & UMCG_WORKER_EVENT_MASK, worker_id);
-    //                     if let Err(e) = self.router.forward_event(worker_id, event) {
-    //                         debug!("Server {}: Failed to forward event: {:?}", self.id, e);
-    //                     }
-    //                     continue;
-    //                 }
-    //
-    //                 debug!("Server {}: Event {}/{}: type {} for worker {} (raw: {:#x})",
-    //                     self.id, i + 1, event_count, event & UMCG_WORKER_EVENT_MASK,
-    //                     worker_id, event);
-    //
-    //                 if let Err(e) = self.handle_event(event) {
-    //                     debug!("Server {}: Event handling error: {}", self.id, e);
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    // fn run_event_loop(&mut self) -> Result<(), ServerError> {
-    //     debug!("Server {}: Starting event loop", self.id);
-    //     let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
-    //     log_cpu_affinity(self.id);
-    //
-    //     let mut base_timeout_ns = 1_000_000; // Start with 1ms
-    //     let mut consecutive_busy = 0;
-    //     const MAX_BACKOFF_SHIFT: u32 = 6; // Max timeout will be 1ms << 6 = 64ms
-    //
-    //     while !self.done.load(Ordering::Relaxed) {
-    //         // Process any forwarded events first
-    //         while let Some(event) = self.queue.pop_event() {
-    //             debug!("Server {}: Processing forwarded event {}", self.id, event);
-    //             self.handle_event(event)?;
-    //         }
-    //
-    //         // Try to schedule any pending tasks
-    //         let has_pending_tasks = self.manage_tasks.has_pending_tasks();
-    //         if has_pending_tasks {
-    //             if let Err(e) = self.try_schedule_tasks() {
-    //                 debug!("Server {}: Task scheduling failed: {:?}", self.id, e);
-    //             }
-    //         }
-    //
-    //         let mut events = [0u64; EVENT_BUFFER_SIZE];
-    //         debug!("Server {}: Waiting for events with retry", self.id);
-    //
-    //         let current_timeout = if consecutive_busy > 0 {
-    //             let shift = consecutive_busy.min(MAX_BACKOFF_SHIFT);
-    //             base_timeout_ns << shift
-    //         } else {
-    //             base_timeout_ns
-    //         };
-    //
-    //         match umcg_wait_retry_timeout(0, Some(&mut events), EVENT_BUFFER_SIZE as i32, current_timeout) {
-    //             WaitResult::Events(ret) => {
-    //                 consecutive_busy = 0; // Reset backoff on successful event
-    //
-    //                 if ret != 0 {
-    //                     let errno = unsafe { *libc::__errno_location() };
-    //                     if errno != libc::ETIMEDOUT {
-    //                         debug!("Server {}: Wait failed with error {} ({})",
-    //                         self.id, ret, std::io::Error::from_raw_os_error(errno));
-    //                         continue;
-    //                     }
-    //                 }
-    //
-    //                 // Process received events
-    //                 let event_count = events.iter().take_while(|&&e| e != 0).count();
-    //                 if event_count > 0 {
-    //                     debug!("Server {}: Processing {} events", self.id, event_count);
-    //                     for (i, &event) in events.iter().take_while(|&&e| e != 0).enumerate() {
-    //                         let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
-    //
-    //                         // Check if this event is for one of our workers
-    //                         if !self.channels.contains_key(&worker_id) {
-    //                             debug!("Server {}: Forwarding event {} for worker {} to correct server",
-    //                             self.id, event & UMCG_WORKER_EVENT_MASK, worker_id);
-    //                             if let Err(e) = self.router.forward_event(worker_id, event) {
-    //                                 debug!("Server {}: Failed to forward event: {:?}", self.id, e);
-    //                             }
-    //                             continue;
-    //                         }
-    //
-    //                         debug!("Server {}: Event {}/{}: type {} for worker {} (raw: {:#x})",
-    //                         self.id, i + 1, event_count, event & UMCG_WORKER_EVENT_MASK,
-    //                         worker_id, event);
-    //
-    //                         if let Err(e) = self.handle_event(event) {
-    //                             debug!("Server {}: Event handling error: {}", self.id, e);
-    //                         }
-    //                     }
-    //                 }
-    //             },
-    //             WaitResult::ProcessForwarded => {
-    //                 consecutive_busy = 0;
-    //                 debug!("Server {}: Processing forwarded events", self.id);
-    //                 continue;
-    //             },
-    //             WaitResult::Timeout => {
-    //                 consecutive_busy = 0;
-    //                 debug!("Server {}: Wait timed out, checking forwarded events", self.id);
-    //                 continue;
-    //             },
-    //             WaitResult::ResourceBusy => {
-    //                 consecutive_busy += 1;
-    //                 debug!("Server {}: Resource busy, backing off (attempt {})", self.id, consecutive_busy);
-    //                 // Small sleep to prevent tight looping when system is under heavy contention
-    //                 std::thread::sleep(std::time::Duration::from_micros(100));
-    //                 continue;
-    //             }
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
     fn run_event_loop(&mut self) -> Result<(), ServerError> {
         debug!("Server {}: Starting event loop", self.id);
         let thread_id = unsafe { libc::syscall(libc::SYS_gettid) };
@@ -786,9 +660,7 @@ impl Server {
                                     self.id, event & UMCG_WORKER_EVENT_MASK, worker_id);
                                 }
                                 if let Err(e) = self.router.forward_event(worker_id, event) {
-                                    if debug_counter % DEBUG_HASH == 0 {
-                                        debug!("Server {}: Failed to forward event: {:?}", self.id, e);
-                                    }
+                                    debug!("Server {}: Failed to forward event: {:?}", self.id, e);
                                 }
                                 continue;
                             }
@@ -833,272 +705,6 @@ impl Server {
         }
         Ok(())
     }
-
-
-
-    // fn try_schedule_tasks(&self) -> Result<(), ServerError> {
-    //     debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS TO SCHEDULE !!!!!!!!!!");
-    //     debug!("!!!! TRY_SCHEDULE: Checking pending queue size: {} !!!!",
-    //        self.worker_queues.pending.len());
-    //     debug!("!!!! TRY_SCHEDULE: Checking running queue size: {} !!!!",
-    //        self.worker_queues.running.len());
-    //
-    //     // Try to get a pending worker from the queue
-    //     if let Some(worker_id) = self.worker_queues.pending.pop() {
-    //         debug!("Server {}: Found pending worker {}", self.id, worker_id);
-    //
-    //         // Verify worker is actually in waiting state
-    //         if let Some(status) = self.states.get(&worker_id) {
-    //             let status = status.lock().unwrap();
-    //             debug!("Server {}: Worker {} status is {:?}", self.id, worker_id, *status);
-    //
-    //             if *status == WorkerStatus::Waiting {
-    //                 // Try to get a task
-    //                 debug!("Server {}: Attempting to get task from queue", self.id);
-    //                 match self.manage_tasks.remove_task() {
-    //                     Some(task) => {
-    //                         debug!("!!!! TRY_SCHEDULE: Found task for worker {} !!!!", worker_id);
-    //                         debug!("Server {}: Found task for worker {}", self.id, worker_id);
-    //                         if let Some(tx) = self.channels.get(&worker_id) {
-    //                             // Update status and move to running queue
-    //                             drop(status); // Release the lock before updating
-    //                             if let Some(status) = self.states.get(&worker_id) {
-    //                                 let mut status = status.lock().unwrap();
-    //                                 *status = WorkerStatus::Running;
-    //
-    //                                 // Add to running queue
-    //                                 if self.worker_queues.running.push(worker_id).is_err() {
-    //                                     debug!("Server {}: Failed to add worker {} to running queue",
-    //                                     self.id, worker_id);
-    //                                 }
-    //                                 debug!("Server {}: Updated worker {} status to Running", self.id, worker_id);
-    //                             }
-    //
-    //                             // Send task to worker
-    //                             if tx.send(WorkerTask::Function(task)).is_ok() {
-    //                                 debug!("Server {}: Sent task to worker {}", self.id, worker_id);
-    //
-    //                                 // Context switch to the worker to let it start the task
-    //                                 let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
-    //                                 debug!("Server {}: Context switching to worker {} to start task", self.id, worker_id);
-    //                                 let switch_ret = unsafe {
-    //                                     libc::syscall(
-    //                                         SYS_UMCG_CTL as i64,
-    //                                         0,
-    //                                         UmcgCmd::CtxSwitch as i64,
-    //                                         (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,
-    //                                         0,
-    //                                         switch_events.as_mut_ptr() as i64,
-    //                                         EVENT_BUFFER_SIZE as i64
-    //                                     )
-    //                                 };
-    //                                 debug!("Server {}: Context switch returned {} for worker {}",
-    //                                 self.id, switch_ret, worker_id);
-    //
-    //                                 // Process any events from the context switch
-    //                                 for &event in switch_events.iter().take_while(|&&e| e != 0) {
-    //                                     debug!("Server {}: Got event {} from context switch", self.id, event);
-    //                                     self.handle_event(event)?;
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                     None => {
-    //                         debug!("!!!! TRY_SCHEDULE: No tasks available for worker {} !!!!", worker_id);
-    //                         debug!("Server {}: No tasks available, returning worker {} to pending queue",
-    //                         self.id, worker_id);
-    //                         // No tasks available, put worker back in pending queue
-    //                         if self.worker_queues.pending.push(worker_id).is_err() {
-    //                             debug!("Server {}: Failed to return worker {} to pending queue",
-    //                             self.id, worker_id);
-    //                         }
-    //                     }
-    //                 }
-    //             } else {
-    //                 debug!("Server {}: Worker {} not in waiting state", self.id, worker_id);
-    //                 // Worker not in waiting state, put back in pending queue
-    //                 if self.worker_queues.pending.push(worker_id).is_err() {
-    //                     debug!("Server {}: Failed to return worker {} to pending queue",
-    //                     self.id, worker_id);
-    //                 }
-    //             }
-    //         }
-    //     } else {
-    //         debug!("Server {}: No pending workers available", self.id);
-    //     }
-    //     Ok(())
-    // }
-
-    // fn try_schedule_tasks(&self) -> Result<(), ServerError> {
-    //     // Get a pending worker
-    //     if let Some(worker_id) = self.worker_queues.pending.pop() {
-    //         debug!("Server {}: Found pending worker {}", self.id, worker_id);
-    //
-    //         // Scope the status lock
-    //         let should_schedule = {
-    //             if let Some(status) = self.states.get(&worker_id) {
-    //                 let status = status.lock().unwrap();
-    //                 *status == WorkerStatus::Waiting
-    //             } else {
-    //                 false
-    //             }
-    //         };
-    //
-    //         if should_schedule {
-    //             // Try to get a task
-    //             if let Some(task) = self.manage_tasks.remove_task() {
-    //                 if let Some(tx) = self.channels.get(&worker_id) {
-    //                     // Send task before status change
-    //                     if tx.send(WorkerTask::Function(task)).is_ok() {
-    //                         // Update status after task is sent
-    //                         if let Some(status) = self.states.get(&worker_id) {
-    //                             let mut status = status.lock().unwrap();
-    //                             *status = WorkerStatus::Running;
-    //                         }
-    //
-    //                         // Add to running queue
-    //                         if self.worker_queues.running.push(worker_id).is_err() {
-    //                             debug!("Failed to add worker {} to running queue",
-    //                             worker_id >> UMCG_WORKER_ID_SHIFT);
-    //                             // Revert status if queue update fails
-    //                             if let Some(status) = self.states.get(&worker_id) {
-    //                                 let mut status = status.lock().unwrap();
-    //                                 *status = WorkerStatus::Waiting;
-    //                             }
-    //                             let _ = self.worker_queues.pending.push(worker_id);
-    //                             return Ok(());
-    //                         }
-    //
-    //                         // Do context switch after queue update
-    //                         match self.context_switch_to_worker(worker_id) {
-    //                             Ok(_) => {
-    //                                 debug!("Successfully switched to worker but now we switched back {}", worker_id);
-    //                             }
-    //                             Err(e) => {
-    //                                 debug!("Context switch failed: {:?}", e);
-    //                                 // Revert queue and status changes
-    //                                 let _ = self.worker_queues.running.pop();
-    //                                 if let Some(status) = self.states.get(&worker_id) {
-    //                                     let mut status = status.lock().unwrap();
-    //                                     *status = WorkerStatus::Waiting;
-    //                                 }
-    //                                 let _ = self.worker_queues.pending.push(worker_id);
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //             } else {
-    //                 // No tasks available, return worker to pending
-    //                 let _ = self.worker_queues.pending.push(worker_id);
-    //             }
-    //         } else {
-    //             // Worker not in waiting state, return to pending
-    //             let _ = self.worker_queues.pending.push(worker_id);
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    // fn try_schedule_tasks(&self) -> Result<(), ServerError> {
-    //     debug!("!!!!!!!!!! SERVER CHECKING FOR TASKS TO SCHEDULE !!!!!!!!!!");
-    //     debug!("!!!! TRY_SCHEDULE: Checking pending queue size: {} !!!!",
-    //     self.worker_queues.pending.len());
-    //     debug!("!!!! TRY_SCHEDULE: Checking running queue size: {} !!!!",
-    //     self.worker_queues.running.len());
-    //
-    //     // Keep trying while we have pending workers
-    //     while let Some(worker_id) = self.worker_queues.pending.pop() {
-    //         debug!("Server {}: Found pending worker {}", self.id, worker_id);
-    //
-    //         // Verify worker is actually in waiting state
-    //         if let Some(status) = self.states.get(&worker_id) {
-    //             let status = status.lock().unwrap();
-    //             debug!("Server {}: Worker {} status is {:?}", self.id, worker_id, *status);
-    //
-    //             if *status != WorkerStatus::Waiting {
-    //                 error!("CRITICAL: Worker {} was in pending queue but had status {:?} - this indicates a state management error",
-    //                 worker_id, *status);
-    //                 // Return worker to pending queue and continue looking for a valid worker
-    //                 if self.worker_queues.pending.push(worker_id).is_err() {
-    //                     error!("Server {}: Failed to return invalid-state worker {} to pending queue",
-    //                     self.id, worker_id);
-    //                 }
-    //                 continue;
-    //             }
-    //
-    //             // Try to get a task
-    //             debug!("Server {}: Attempting to get task from queue", self.id);
-    //             match self.manage_tasks.remove_task() {
-    //                 Some(task) => {
-    //                     debug!("!!!! TRY_SCHEDULE: Found task for worker {} !!!!", worker_id);
-    //                     debug!("Server {}: Found task for worker {}", self.id, worker_id);
-    //                     if let Some(tx) = self.channels.get(&worker_id) {
-    //                         // Update status and move to running queue
-    //                         drop(status); // Release the lock before updating
-    //                         if let Some(status) = self.states.get(&worker_id) {
-    //                             let mut status = status.lock().unwrap();
-    //                             *status = WorkerStatus::Running;
-    //
-    //                             // Add to running queue
-    //                             if self.worker_queues.running.push(worker_id).is_err() {
-    //                                 error!("Server {}: Failed to add worker {} to running queue",
-    //                                 self.id, worker_id);
-    //                                 // Revert status change
-    //                                 *status = WorkerStatus::Waiting;
-    //                                 if self.worker_queues.pending.push(worker_id).is_err() {
-    //                                     error!("Server {}: Failed to return worker {} to pending queue after running queue failure",
-    //                                     self.id, worker_id);
-    //                                 }
-    //                                 continue;
-    //                             }
-    //                             debug!("Server {}: Updated worker {} status to Running", self.id, worker_id);
-    //                         }
-    //
-    //                         // Send task to worker
-    //                         if tx.send(WorkerTask::Function(task)).is_ok() {
-    //                             debug!("Server {}: Sent task to worker {}", self.id, worker_id);
-    //
-    //                             // Context switch to the worker to let it start the task
-    //                             let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
-    //                             debug!("Server {}: Context switching to worker {} to start task", self.id, worker_id);
-    //                             let switch_ret = unsafe {
-    //                                 libc::syscall(
-    //                                     SYS_UMCG_CTL as i64,
-    //                                     0,
-    //                                     UmcgCmd::CtxSwitch as i64,
-    //                                     (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,
-    //                                     0,
-    //                                     switch_events.as_mut_ptr() as i64,
-    //                                     EVENT_BUFFER_SIZE as i64
-    //                                 )
-    //                             };
-    //                             debug!("Server {}: Context switch returned {} for worker {}",
-    //                             self.id, switch_ret, worker_id);
-    //
-    //                             // Process any events from the context switch
-    //                             for &event in switch_events.iter().take_while(|&&e| e != 0) {
-    //                                 debug!("Server {}: Got event {} from context switch", self.id, event);
-    //                                 self.handle_event(event)?;
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //                 None => {
-    //                     debug!("!!!! TRY_SCHEDULE: No tasks available for worker {} !!!!", worker_id);
-    //                     debug!("Server {}: No tasks available, returning worker {} to pending queue",
-    //                     self.id, worker_id);
-    //                     // No tasks available, put worker back in pending queue and exit loop
-    //                     if self.worker_queues.pending.push(worker_id).is_err() {
-    //                         error!("Server {}: Failed to return worker {} to pending queue",
-    //                         self.id, worker_id);
-    //                     }
-    //                     break;  // Exit loop when we run out of tasks
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     Ok(())
-    // }
 
     fn try_schedule_tasks(&self, print_debug: bool) -> Result<(), ServerError> {
         if print_debug {
@@ -1392,237 +998,7 @@ impl Server {
 
         Ok(())
     }
-
-    // fn handle_event(&self, event: u64) -> Result<(), ServerError> {
-    //     let event_type = event & UMCG_WORKER_EVENT_MASK;
-    //     let worker_id = event >> UMCG_WORKER_ID_SHIFT;
-    //
-    //     debug!("Server {}: Processing event {:?} for worker {} (raw event: {:#x})",
-    //         self.id,
-    //         match event_type {
-    //             e if e == UmcgEventType::Block as u64 => "BLOCK",
-    //             e if e == UmcgEventType::Wake as u64 => "WAKE",
-    //             e if e == UmcgEventType::Wait as u64 => "WAIT",
-    //             e if e == UmcgEventType::Exit as u64 => "EXIT",
-    //             e if e == UmcgEventType::Timeout as u64 => "TIMEOUT",
-    //             e if e == UmcgEventType::Preempt as u64 => "PREEMPT",
-    //             _ => "UNKNOWN",
-    //         },
-    //         worker_id,
-    //         event
-    //     );
-    //
-    //     match event_type {
-    //         e if e == UmcgEventType::Block as u64 => {
-    //             // Update status only, keep in running queue
-    //             if let Some(status) = self.states.get(&worker_id) {
-    //                 let mut status = status.lock().unwrap();
-    //                 if *status == WorkerStatus::Running {
-    //                     *status = WorkerStatus::Blocked;
-    //                     debug!("Worker {} blocked while running", worker_id);
-    //                 }
-    //             }
-    //         },
-    //         e if e == UmcgEventType::Wake as u64 => {
-    //             let raw_tid = event >> UMCG_WORKER_ID_SHIFT;  // Get raw tid from event
-    //             let worker_id = raw_tid << UMCG_WORKER_ID_SHIFT;  // Shift for HashMap lookup
-    //
-    //             debug!("Server {}: Processing WAKE event for worker {} (raw tid: {})",
-    //     self.id, worker_id, raw_tid);
-    //
-    //             if let Some(status) = self.states.get(&worker_id) {  // Use shifted ID for lookup
-    //                 let mut status = status.lock().unwrap();
-    //                 if *status == WorkerStatus::Blocked {
-    //                     debug!("Server {}: Worker {} (tid {}) transitioning from Blocked to Running",
-    //             self.id, worker_id, raw_tid);
-    //                     *status = WorkerStatus::Running;
-    //                     drop(status);  // Drop lock before context switch
-    //
-    //                     // Do context switch with raw tid
-    //                     let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
-    //                     let switch_ret = unsafe {
-    //                         libc::syscall(
-    //                             SYS_UMCG_CTL as i64,
-    //                             0,
-    //                             UmcgCmd::CtxSwitch as i64,
-    //                             raw_tid as i32,  // Use raw tid for context switch
-    //                             0,
-    //                             switch_events.as_mut_ptr() as i64,
-    //                             EVENT_BUFFER_SIZE as i64
-    //                         )
-    //                     };
-    //
-    //                     if switch_ret == 0 {
-    //                         debug!("Server {}: Successfully resumed worker {} (tid {})",
-    //                 self.id, worker_id, raw_tid);
-    //                     } else {
-    //                         // Revert status on failed switch
-    //                         if let Some(status) = self.states.get(&worker_id) {
-    //                             let mut status = status.lock().unwrap();
-    //                             *status = WorkerStatus::Blocked;
-    //                         }
-    //                     }
-    //                 } else {
-    //                     debug!("Server {}: Worker {} (tid {}) not blocked (status: {:?})",
-    //             self.id, worker_id, raw_tid, *status);
-    //                 }
-    //             } else {
-    //                 debug!("Server {}: No state found for worker {} (tid {})",
-    //         self.id, worker_id, raw_tid);
-    //             }
-    //         },
-    //         e if e == UmcgEventType::Wait as u64 => {
-    //             // Handle waiting state transition
-    //             if let Some(status) = self.states.get(&worker_id) {
-    //                 let mut status = status.lock().unwrap();
-    //                 if *status == WorkerStatus::Running {
-    //                     *status = WorkerStatus::Waiting;
-    //                     drop(status); // Release lock before queue operations
-    //
-    //                     // Remove from running and add to pending atomically
-    //                     if self.worker_queues.running.pop().is_some() {
-    //                         if self.worker_queues.pending.push(worker_id).is_err() {
-    //                             debug!("Failed to move worker {} to pending queue", worker_id);
-    //                             // Try to recover
-    //                             let _ = self.worker_queues.running.push(worker_id);
-    //                             if let Some(status) = self.states.get(&worker_id) {
-    //                                 let mut status = status.lock().unwrap();
-    //                                 *status = WorkerStatus::Running;
-    //                             }
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         },
-    //         _ => {
-    //             debug!("Unknown event type {} for worker {}", event_type, worker_id);
-    //         }
-    //     }
-    //     Ok(())
-    // }
-    // fn handle_event(&self, event: u64) -> Result<(), ServerError> {
-    //     let event_type = event & UMCG_WORKER_EVENT_MASK;
-    //     let raw_tid = event >> UMCG_WORKER_ID_SHIFT;
-    //     let worker_id = self.raw_tid_to_worker_id(raw_tid);
-    //
-    //     debug!("Server {}: Processing event type {} from worker {} (tid: {}, raw event: {})",
-    //     self.id, event_type, worker_id, raw_tid, event);
-    //
-    //     match event_type {
-    //         e if e == UmcgEventType::Block as u64 => {
-    //             debug!("Server {}: Worker {} (tid: {}) blocked while in running queue",
-    //             self.id, worker_id, raw_tid);
-    //
-    //             // Get current status and update it under a short lock
-    //             if let Some(mut status) = self.get_worker_state(worker_id) {
-    //                 debug!("Server {}: Processing BLOCK for worker {} (tid: {}) in state {:?}",
-    //                 self.id, worker_id, raw_tid, *status);
-    //                 if *status == WorkerStatus::Running {
-    //                     *status = WorkerStatus::Blocked;
-    //                     debug!("Server {}: Updated worker {} (tid: {}) status from Running to Blocked",
-    //                     self.id, worker_id, raw_tid);
-    //                 }
-    //             } else {
-    //                 debug!("Server {}: No state found for worker {} (tid: {}) during BLOCK",
-    //                 self.id, worker_id, raw_tid);
-    //                 return Ok(());
-    //             }
-    //             // Worker stays in running queue while blocked
-    //             debug!("!!!! EVENT_HANDLER: Completed processing BLOCK for worker {} (tid: {}) !!!!",
-    //             worker_id, raw_tid);
-    //         },
-    //
-    //         e if e == UmcgEventType::Wake as u64 => {
-    //             debug!("Server {}: Processing WAKE for worker {} (tid: {})",
-    //             self.id, worker_id, raw_tid);
-    //
-    //             if let Some(mut status) = self.get_worker_state(worker_id) {
-    //                 if *status == WorkerStatus::Blocked {
-    //                     debug!("Server {}: Worker {} (tid: {}) woke up from blocked state, resuming task",
-    //                     self.id, worker_id, raw_tid);
-    //
-    //                     *status = WorkerStatus::Running;
-    //                     drop(status);  // Release lock before context switch
-    //
-    //                     // Do context switch after releasing lock
-    //                     debug!("Server {}: Context switching to unblocked worker {} (tid: {}) to resume task",
-    //                     self.id, worker_id, raw_tid);
-    //
-    //                     match self.context_switch_to_worker(worker_id) {
-    //                         Ok(_) => {
-    //                             debug!("Server {}: Successfully resumed worker {} (tid: {}) after wake",
-    //                             self.id, worker_id, raw_tid);
-    //                         }
-    //                         Err(e) => {
-    //                             debug!("Server {}: Context switch failed for worker {} (tid: {}): {:?}",
-    //                             self.id, worker_id, raw_tid, e);
-    //                             // Revert status on failed switch
-    //                             if let Some(mut status) = self.get_worker_state(worker_id) {
-    //                                 *status = WorkerStatus::Blocked;
-    //                             }
-    //                         }
-    //                     }
-    //                 } else {
-    //                     debug!("Server {}: Worker {} (tid: {}) not blocked (status: {:?})",
-    //                     self.id, worker_id, raw_tid, *status);
-    //                 }
-    //             } else {
-    //                 debug!("Server {}: No state found for worker {} (tid: {})",
-    //                 self.id, worker_id, raw_tid);
-    //             }
-    //         },
-    //
-    //         e if e == UmcgEventType::Wait as u64 => {
-    //             debug!("Server {}: Got explicit WAIT from worker {} (tid: {})",
-    //             self.id, worker_id, raw_tid);
-    //
-    //             if let Some(mut status) = self.get_worker_state(worker_id) {
-    //                 let prev = status.clone();
-    //                 debug!("Server {}: Processing explicit WAIT for worker {} (tid: {}) in state {:?}",
-    //                 self.id, worker_id, raw_tid, prev);
-    //
-    //                 match prev {
-    //                     WorkerStatus::Running => {
-    //                         *status = WorkerStatus::Waiting;
-    //                         let _ = self.worker_queues.running.pop();
-    //                         debug!("Server {}: Transitioned worker {} (tid: {}) from Running to Waiting",
-    //                         self.id, worker_id, raw_tid);
-    //
-    //                         // Release lock before queue operations
-    //                         drop(status);
-    //
-    //                         match self.worker_queues.pending.push(worker_id) {
-    //                             Ok(_) => debug!("Server {}: Added worker {} (tid: {}) to pending queue",
-    //                             self.id, worker_id, raw_tid),
-    //                             Err(_) => debug!("Server {}: Failed to add worker {} (tid: {}) to pending queue",
-    //                             self.id, worker_id, raw_tid),
-    //                         }
-    //                     },
-    //                     _ => {
-    //                         debug!("Server {}: Unexpected WAIT for worker {} (tid: {}) in state {:?}",
-    //                         self.id, worker_id, raw_tid, prev);
-    //                     }
-    //                 }
-    //             } else {
-    //                 debug!("Server {}: No state found for worker {}", self.id, worker_id);
-    //                 return Ok(());
-    //             }
-    //
-    //             debug!("!!!! EVENT_HANDLER lame: Completed processing WAIT for worker {} (tid: {}) !!!!",
-    //             worker_id, raw_tid);
-    //         },
-    //
-    //         _ => {
-    //             return Err(ServerError::InvalidWorkerEvent {
-    //                 worker_id: worker_id as usize,
-    //                 event,
-    //             });
-    //         }
-    //     }
-    //
-    //     Ok(())
-    // }
-
+    
     fn context_switch_to_worker(&self, worker_id: u64) -> Result<(), ServerError> {
         let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
         debug!("Server {}: Context switching to worker {} to start task", self.id, worker_id);
@@ -2245,6 +1621,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     const WORKER_COUNT: usize = 2;
     const SERVER_COUNT: usize = 4;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
+    const RING_SIZE: usize = 1000;
 
     // Create task queue and worker queues
     let router = ServerRouter::new(SERVER_COUNT, QUEUE_CAPACITY);
@@ -2257,13 +1634,27 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
         server_count: SERVER_COUNT,  // Using multiple servers
     });
     let done = Arc::new(AtomicBool::new(false));
-    let done_tcp = done.clone(); // Clone for TCP accept loop
     let wait = Arc::new(AtomicBool::new(true));
+
+    // todo setup EventRoutingServer hashmap of server id to producer
+    // todo initialize mut  EventRoutingServer hashmap of worker to server id
+    let mut server_producers: HashMap<u64, ringbuf::HeapProd<u64>> = HashMap::new();
+    let mut server_consumers: HashMap<u64, ringbuf::HeapCons<u64>> = HashMap::new();
+    // Initialize ring buffers for each server
+    for server_id in 0..SERVER_COUNT {
+        let ring = HeapRb::<u64>::new(RING_SIZE);
+        let (prod, cons) = ring.split();
+        server_producers.insert(server_id as u64, prod);
+        server_consumers.insert(server_id as u64, cons);
+    }
+
+    let mut worker_to_server: HashMap<u64, u64> = HashMap::new();
 
     for server_id in 0..SERVER_COUNT {
         let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
         let (states, channels) = executor.initialize_workers(server_id, WORKER_COUNT, router.clone());
 
+        // todo pass EventRoutingServer  consumer for this server id here
         executor.initialize_server_and_setup_workers(
             server_id,
             states.clone(),
@@ -2273,22 +1664,46 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
             router.clone(),
             done.clone(),
             wait.clone(),
+            // server_consumers.remove(&(server_id as u64)).unwrap()
         );
 
         let mut all_workers_ready = false;
         while !all_workers_ready {
-            let ready_count = states.values()
-                .filter(|state| {
+            let ready_workers: Vec<u64> = states.iter()
+                .filter_map(|(worker_id, state)| {
                     let state = state.lock().unwrap();
-                    *state == WorkerStatus::Waiting
+                    if *state == WorkerStatus::Waiting {
+                        Some(*worker_id)
+                    } else {
+                        None
+                    }
                 })
-                .count();
-            all_workers_ready = ready_count == WORKER_COUNT;
-            if !all_workers_ready {
+                .collect();
+
+            all_workers_ready = ready_workers.len() == WORKER_COUNT;
+
+            if all_workers_ready {
+                // Add worker->server mappings for ready workers
+                for worker_id in ready_workers {
+                    worker_to_server.insert(worker_id, server_id as u64);
+                }
+            } else {
                 thread::sleep(Duration::from_millis(10));
             }
         }
+
+        // todo when workers ready, populate mut EventRoutingServer hashmap of worker to server id
     }
+
+    let event_routing_server_id = SERVER_COUNT as u64; // equal to server count so it's N + 1
+    let event_routing_server = EventRoutingServer::new(
+        event_routing_server_id as usize,
+        worker_to_server,
+        server_producers,
+        done.clone()
+    );
+
+    let event_routing_handle = event_routing_server.start(wait.clone());
 
     wait.store(false, Ordering::SeqCst);
 
@@ -2548,6 +1963,7 @@ pub fn run_echo_server_demo() -> i32 {
     });
 
     let wait = Arc::new(AtomicBool::new(false));
+    let mut server_to_worker: HashMap<u64, u64> = HashMap::new();
 
     for server_id in 0..SERVER_COUNT {
         let worker_queues = Arc::new(WorkerQueues::new(WORKER_COUNT));
