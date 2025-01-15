@@ -723,7 +723,6 @@ impl Server {
         const DEBUG_HASH: u64 = 100;
         const MAX_EVENTS_PER_BATCH: usize = 32; // We can adjust this batch size
         let mut debug_counter: u64 = 0;
-        let mut event_buffer = [0u64; MAX_EVENTS_PER_BATCH];
 
         while !self.done.load(Ordering::Relaxed) {
             let mut print_debug = false;
@@ -750,13 +749,14 @@ impl Server {
                 debug!("Server {}: Task scheduling failed: {:?}", self.id, e);
             }
 
+            let mut event_buffer = [0u64; MAX_EVENTS_PER_BATCH];
             // Process batch of events from the ring buffer
             let count = self.event_consumer.pop_slice(&mut event_buffer);
             for &event in event_buffer.iter().take(count) {
                 let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
 
                 // if debug_counter % DEBUG_HASH == 0 {
-                debug!("Server {}: Processing event type {} for worker {} (raw: {:#x})",
+                debug!("Server {}: Processing event type from ring buffer {} for worker {} (raw: {:#x})",
                     self.id,
                     event & UMCG_WORKER_EVENT_MASK,
                     worker_id,
@@ -771,7 +771,7 @@ impl Server {
                     continue;
                 }
 
-                if let Err(e) = self.handle_event(event) {
+                if let Err(e) = self.handle_event(event, 0, "run_event_loop") {
                     if debug_counter % DEBUG_HASH == 0 {
                         debug!("Server {}: Event handling error: {}", self.id, e);
                     }
@@ -869,14 +869,16 @@ impl Server {
                                 debug!("Server {}: Context switch returned {} for worker {} running task {}",
                                 self.id, switch_ret, worker_id, tracked_task.id);
 
+                                debug!("Server {}: Switch events converted: {:?}", self.id,
+                                    switch_events.map(|e| UmcgEventType::from_u64(e & UMCG_WORKER_EVENT_MASK)));
                                 // Process context switch events
                                 // for &event in switch_events.iter().take(2) {
                                 for &event in switch_events.iter().take_while(|&&e| e != 0) {
                                     debug!("Server {}: Got event {:?} from context switch while running task {}",
                                     self.id, UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK), tracked_task.id);
-                                    self.handle_event(event)?;
+                                    self.handle_event(event, 0, "try_schedule_tasks")?;
                                     // TODO: see if this doesn't work
-                                    break;
+                                    // break;
                                 }
 
                             //                      for &event in switch_events.iter().take_while(|&&e| e != 0) {
@@ -914,16 +916,18 @@ impl Server {
         Ok(())
     }
 
-    fn handle_event(&self, event: u64) -> Result<(), ServerError> {
+    fn handle_event(&self, event: u64, depth: usize, caller: &str) -> Result<(), ServerError> {
         let event_type = event & UMCG_WORKER_EVENT_MASK;
         let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
 
-        debug!("Server {}: Processing event type {} from worker {} (raw event: {})",
-        self.id, event_type, worker_id, event);
+        debug!("Server {}: Processing event type {} from worker {} (raw event: {}). depth: {}, caller: {}",
+        self.id, event_type, worker_id, event, depth, caller);
         // Add worker state logging
         if let Some(status) = self.states.get(&worker_id) {
             let status = status.lock().unwrap();
             debug!("Server {}: Worker {} current status: {:?}", self.id, worker_id, *status);
+        } else {
+            debug!("Server {}: Worker {} not found in states", self.id, worker_id);
         }
 
         match event_type {
@@ -949,8 +953,8 @@ impl Server {
                     }
                 };
                 // Worker stays in running queue while blocked
-                debug!("!!!! EVENT_HANDLER: Server {} Completed processing event type {:?} for worker {} !!!!",
-                self.id, UmcgEventType::from_u64(event_type), worker_id);
+                debug!("!!!! EVENT_HANDLER: Server {} Completed processing event type {:?} for worker {}, depth {} !!!!",
+                self.id, UmcgEventType::from_u64(event_type), worker_id, depth);
             },
 
             e if e == UmcgEventType::Wake as u64 => {
@@ -999,9 +1003,12 @@ impl Server {
                         debug!("Server {}: Context switch for unblocked worker {} returned {}",
                         self.id, worker_id, switch_ret);
 
+                        debug!("Server {}: Switch events converted: {:?}", self.id,
+                                    switch_events.map(|e| UmcgEventType::from_u64(e & UMCG_WORKER_EVENT_MASK)));
+
                         for &event in switch_events.iter().take_while(|&&e| e != 0) {
                             debug!("Server {}: Got event {:?} from context switch in handle_event", self.id, UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK));
-                            self.handle_event(event)?;
+                            self.handle_event(event, depth+1, "handle_event")?;
                             // TODO: see if this doesn't work
                             break;
                         }
@@ -1025,8 +1032,8 @@ impl Server {
                     _ => debug!("Server {}: Unexpected WAKE for worker {} in state {:?}",
                     self.id, worker_id, current_status),
                 }
-                debug!("!!!! EVENT_HANDLER: Server {} Completed processing event type {:?} for worker {} !!!!",
-                self.id, UmcgEventType::from_u64(event_type), worker_id);
+                debug!("!!!! EVENT_HANDLER: Server {} Completed processing event type {:?} for worker {} depth {} !!!!",
+                self.id, UmcgEventType::from_u64(event_type), worker_id, depth);
             },
 
             e if e == UmcgEventType::Wait as u64 => {
@@ -1067,11 +1074,12 @@ impl Server {
                     self.id, worker_id),
                 }
 
-                debug!("!!!! EVENT_HANDLER: Server {} Completed processing event type {:?} for worker {} !!!!",
-                self.id, event_type, worker_id);
+                debug!("!!!! EVENT_HANDLER: Server {} Completed processing event type {:?} for worker {} depth {}!!!!",
+                self.id, event_type, worker_id, depth);
             },
 
             _ => {
+                debug!("Server {} Invalid worker {} event {:?}", self.id, worker_id, UmcgEventType::from_u64(event_type));
                 return Err(ServerError::InvalidWorkerEvent {
                     worker_id: worker_id as usize,
                     event,
@@ -1082,66 +1090,66 @@ impl Server {
         Ok(())
     }
 
-    fn context_switch_to_worker(&self, worker_id: u64) -> Result<(), ServerError> {
-        let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
-        debug!("Server {}: Context switching to worker {} to start task", self.id, worker_id);
-
-        let switch_ret = unsafe {
-            libc::syscall(
-                SYS_UMCG_CTL as i64,
-                0,
-                UmcgCmd::CtxSwitch as i64,
-                (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,  // Convert worker_id to tid
-                0,
-                switch_events.as_mut_ptr() as i64,
-                EVENT_BUFFER_SIZE as i64
-            )
-        };
-
-        if switch_ret != 0 {
-            let errno = unsafe { *libc::__errno_location() };
-            debug!("Server {}: Context switch failed: {} (errno: {})",
-            self.id, switch_ret, errno);
-            return Err(ServerError::ContextSwitchFailed {
-                worker_id,
-                ret_code: switch_ret as i32,
-                errno,
-            });
-        }
-
-        // Process any events from the context switch
-        let event_count = switch_events.iter().take_while(|&&e| e != 0).count();
-        debug!("Server {}: Context switch to worker {} returned {} events",
-        self.id, worker_id >> UMCG_WORKER_ID_SHIFT, event_count);
-
-        // Process any events from the context switch
-        for (idx, &event) in switch_events.iter()
-            .take_while(|&&e| e != 0)
-            .enumerate()
-        {
-            let event_type = event & UMCG_WORKER_EVENT_MASK;
-            let event_worker = event >> UMCG_WORKER_ID_SHIFT;
-            debug!("Server {}: Context switch event {}/{}: type {:?} for worker {} (raw: {:#x})",
-            self.id,
-            idx + 1,
-            event_count,
-            match event_type {
-                e if e == UmcgEventType::Block as u64 => "BLOCK",
-                e if e == UmcgEventType::Wake as u64 => "WAKE",
-                e if e == UmcgEventType::Wait as u64 => "WAIT",
-                e if e == UmcgEventType::Exit as u64 => "EXIT",
-                e if e == UmcgEventType::Timeout as u64 => "TIMEOUT",
-                e if e == UmcgEventType::Preempt as u64 => "PREEMPT",
-                _ => "UNKNOWN",
-            },
-            event_worker,
-            event
-        );
-            self.handle_event(event)?;
-        }
-
-        Ok(())
-    }
+    // fn context_switch_to_worker(&self, worker_id: u64) -> Result<(), ServerError> {
+    //     let mut switch_events = [0u64; EVENT_BUFFER_SIZE];
+    //     debug!("Server {}: Context switching to worker {} to start task", self.id, worker_id);
+    //
+    //     let switch_ret = unsafe {
+    //         libc::syscall(
+    //             SYS_UMCG_CTL as i64,
+    //             0,
+    //             UmcgCmd::CtxSwitch as i64,
+    //             (worker_id >> UMCG_WORKER_ID_SHIFT) as i32,  // Convert worker_id to tid
+    //             0,
+    //             switch_events.as_mut_ptr() as i64,
+    //             EVENT_BUFFER_SIZE as i64
+    //         )
+    //     };
+    //
+    //     if switch_ret != 0 {
+    //         let errno = unsafe { *libc::__errno_location() };
+    //         debug!("Server {}: Context switch failed: {} (errno: {})",
+    //         self.id, switch_ret, errno);
+    //         return Err(ServerError::ContextSwitchFailed {
+    //             worker_id,
+    //             ret_code: switch_ret as i32,
+    //             errno,
+    //         });
+    //     }
+    //
+    //     // Process any events from the context switch
+    //     let event_count = switch_events.iter().take_while(|&&e| e != 0).count();
+    //     debug!("Server {}: Context switch to worker {} returned {} events",
+    //     self.id, worker_id >> UMCG_WORKER_ID_SHIFT, event_count);
+    //
+    //     // Process any events from the context switch
+    //     for (idx, &event) in switch_events.iter()
+    //         .take_while(|&&e| e != 0)
+    //         .enumerate()
+    //     {
+    //         let event_type = event & UMCG_WORKER_EVENT_MASK;
+    //         let event_worker = event >> UMCG_WORKER_ID_SHIFT;
+    //         debug!("Server {}: Context switch event {}/{}: type {:?} for worker {} (raw: {:#x})",
+    //         self.id,
+    //         idx + 1,
+    //         event_count,
+    //         match event_type {
+    //             e if e == UmcgEventType::Block as u64 => "BLOCK",
+    //             e if e == UmcgEventType::Wake as u64 => "WAKE",
+    //             e if e == UmcgEventType::Wait as u64 => "WAIT",
+    //             e if e == UmcgEventType::Exit as u64 => "EXIT",
+    //             e if e == UmcgEventType::Timeout as u64 => "TIMEOUT",
+    //             e if e == UmcgEventType::Preempt as u64 => "PREEMPT",
+    //             _ => "UNKNOWN",
+    //         },
+    //         event_worker,
+    //         event
+    //     );
+    //         self.handle_event(event)?;
+    //     }
+    //
+    //     Ok(())
+    // }
 
     pub fn shutdown(&self) {
         debug!("Server {}: Initiating shutdown", self.id);
@@ -1177,41 +1185,41 @@ impl Server {
 }
 
 fn log_cpu_affinity(server_id: usize) {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let mut cpu_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
-        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), cpu_set.as_mut_ptr()) == 0 {
-            let cpu_set = cpu_set.assume_init();
-            let mut allowed_cpus = Vec::new();
-
-            for i in 0..libc::CPU_SETSIZE as i32 {
-                if libc::CPU_ISSET(i as usize, &cpu_set) {
-                    allowed_cpus.push(i);
-                }
-            }
-
-            let current_cpu = get_current_cpu();
-            println!("Server {} CPU Affinity:\nAllowed Cpus: {:?}\nCurrent Cpu: {}", server_id, allowed_cpus, current_cpu);
-            // println!("  Allowed CPUs: {:?}", allowed_cpus);
-
-            // Get current CPU
-            // println!("  Current CPU: {}", current_cpu);
-
-            // Check if current CPU is in allowed set
-            if current_cpu >= 0 && libc::CPU_ISSET(current_cpu as usize, &cpu_set) {
-                println!("  Status: Running on allowed CPU");
-            } else {
-                println!("  Status: WARNING - Current CPU not in allowed set!");
-            }
-        } else {
-            println!("Server {}: Failed to get CPU affinity: {}",
-                     server_id,
-                     std::io::Error::last_os_error());
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    println!("Server {}: CPU affinity logging not supported on this platform", server_id);
+    // #[cfg(target_os = "linux")]
+    // unsafe {
+    //     let mut cpu_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+    //     if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), cpu_set.as_mut_ptr()) == 0 {
+    //         let cpu_set = cpu_set.assume_init();
+    //         let mut allowed_cpus = Vec::new();
+    //
+    //         for i in 0..libc::CPU_SETSIZE as i32 {
+    //             if libc::CPU_ISSET(i as usize, &cpu_set) {
+    //                 allowed_cpus.push(i);
+    //             }
+    //         }
+    //
+    //         let current_cpu = get_current_cpu();
+    //         println!("Server {} CPU Affinity:\nAllowed Cpus: {:?}\nCurrent Cpu: {}", server_id, allowed_cpus, current_cpu);
+    //         // println!("  Allowed CPUs: {:?}", allowed_cpus);
+    //
+    //         // Get current CPU
+    //         // println!("  Current CPU: {}", current_cpu);
+    //
+    //         // Check if current CPU is in allowed set
+    //         if current_cpu >= 0 && libc::CPU_ISSET(current_cpu as usize, &cpu_set) {
+    //             println!("  Status: Running on allowed CPU");
+    //         } else {
+    //             println!("  Status: WARNING - Current CPU not in allowed set!");
+    //         }
+    //     } else {
+    //         println!("Server {}: Failed to get CPU affinity: {}",
+    //                  server_id,
+    //                  std::io::Error::last_os_error());
+    //     }
+    // }
+    //
+    // #[cfg(not(target_os = "linux"))]
+    // println!("Server {}: CPU affinity logging not supported on this platform", server_id);
 }
 
 struct Executor {
@@ -1536,31 +1544,69 @@ impl TaskHandle {
     }
 }
 
+// fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
+//     #[cfg(target_os = "linux")]
+//     unsafe {
+//         let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+//         let set_ref = &mut *set.as_mut_ptr();
+//
+//         libc::CPU_ZERO(set_ref);
+//         libc::CPU_SET(cpu_id, set_ref);
+//
+//         let sched_param = libc::sched_param { sched_priority: 1 };
+//         libc::sched_setscheduler(0, libc::SCHED_FIFO, &sched_param);
+//
+//         let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
+//         if result != 0 {
+//             debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
+//         } else {
+//             debug!("Successfully set CPU affinity to {}", cpu_id);
+//         }
+//
+//         // Verify the affinity was set
+//         let mut verify_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+//         if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), verify_set.as_mut_ptr()) == 0 {
+//             let verify_set = verify_set.assume_init();
+//             if !libc::CPU_ISSET(cpu_id, &verify_set) {
+//                 debug!("WARNING: CPU affinity verification failed for CPU {}", cpu_id);
+//             }
+//         }
+//     }
+//     Ok(())
+// }
+
 fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
-        let set_ref = &mut *set.as_mut_ptr();
-
-        libc::CPU_ZERO(set_ref);
-        libc::CPU_SET(cpu_id, set_ref);
-
-        let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
-        if result != 0 {
-            debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
-        } else {
-            debug!("Successfully set CPU affinity to {}", cpu_id);
-        }
-
-        // Verify the affinity was set
-        let mut verify_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
-        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), verify_set.as_mut_ptr()) == 0 {
-            let verify_set = verify_set.assume_init();
-            if !libc::CPU_ISSET(cpu_id, &verify_set) {
-                debug!("WARNING: CPU affinity verification failed for CPU {}", cpu_id);
-            }
-        }
-    }
+    // #[cfg(target_os = "linux")]
+    // unsafe {
+    //     let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+    //     let set_ref = &mut *set.as_mut_ptr();
+    //
+    //     libc::CPU_ZERO(set_ref);
+    //     libc::CPU_SET(cpu_id, set_ref);
+    //
+    //     // Set real-time scheduling priority
+    //     let mut param: libc::sched_param = std::mem::zeroed();
+    //     param.sched_priority = 1;  // Minimum RT priority
+    //
+    //     // Try to set SCHED_FIFO, but don't fail if we can't
+    //     let _ = libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
+    //
+    //     let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
+    //     if result != 0 {
+    //         debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
+    //     } else {
+    //         debug!("Successfully set CPU affinity to {}", cpu_id);
+    //     }
+    //
+    //     // Verify the affinity was set
+    //     let mut verify_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+    //     if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), verify_set.as_mut_ptr()) == 0 {
+    //         let verify_set = verify_set.assume_init();
+    //         if !libc::CPU_ISSET(cpu_id, &verify_set) {
+    //             debug!("WARNING: CPU affinity verification failed for CPU {}", cpu_id);
+    //         }
+    //     }
+    // }
     Ok(())
 }
 
