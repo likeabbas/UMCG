@@ -138,22 +138,60 @@ closure_func_basic(timer_handler, void, umcg_worker_timeout,
     set_syscall_return(worker->t, -ETIMEDOUT);
 }
 
+//static void umcg_syscall_pause(context ctx)
+//{
+//    thread t = ((syscall_context)ctx)->t;
+//    umcg_worker worker = umcg_get_worker(t);
+//    if ((worker != INVALID_ADDRESS) &&
+//        compare_and_swap_32(&worker->status, UMCG_WORKER_PAUSED, UMCG_WORKER_BLOCKED)) {
+//        umcg_debug("worker 0x%lx blocked in syscall", worker->id);
+//        blockq bq = worker->server_bq;
+//        worker->server_bq = 0;
+//        *worker->server_event = worker->id | UMCG_WE_BLOCK;
+//        umcg_debug("worker 0x%lx setting event type %d", worker->id, UMCG_WE_BLOCK);
+//        blockq_wake_one(bq);
+//        blockq_release(bq);
+//    }
+//    ctx->pause = umcg.syscall_pause;
+//    ctx->pause(ctx);
+//}
+
 static void umcg_syscall_pause(context ctx)
 {
     thread t = ((syscall_context)ctx)->t;
     umcg_worker worker = umcg_get_worker(t);
+//    umcg_debug("worker 0x%lx entering syscall_pause with status %d", worker->id, worker->status);
+
     if ((worker != INVALID_ADDRESS) &&
         compare_and_swap_32(&worker->status, UMCG_WORKER_PAUSED, UMCG_WORKER_BLOCKED)) {
-        umcg_debug("worker 0x%lx blocked in syscall", worker->id);
+        umcg_debug("worker 0x%lx CAS PAUSED->BLOCKED succeeded", worker->id);
         blockq bq = worker->server_bq;
         worker->server_bq = 0;
         *worker->server_event = worker->id | UMCG_WE_BLOCK;
+        umcg_debug("worker 0x%lx setting event type %d and status is now %d",
+                  worker->id, UMCG_WE_BLOCK, worker->status);
         blockq_wake_one(bq);
         blockq_release(bq);
+    } else {
+        umcg_debug("worker 0x%lx CAS PAUSED->BLOCKED failed, status remains %d",
+                  worker->id, worker->status);
     }
     ctx->pause = umcg.syscall_pause;
     ctx->pause(ctx);
 }
+
+//static void umcg_worker_pause(context ctx)
+//{
+//    thread t = (thread)ctx;
+//    syscall_context sc = t->syscall;
+//    if (sc) {
+//        umcg_worker worker = umcg_get_worker(t);
+//        worker->status = UMCG_WORKER_PAUSED;
+//        umcg.syscall_pause = sc->uc.kc.context.pause;
+//        sc->uc.kc.context.pause = umcg_syscall_pause;
+//    }
+//    umcg.thread_pause(ctx);
+//}
 
 static void umcg_worker_pause(context ctx)
 {
@@ -161,32 +199,59 @@ static void umcg_worker_pause(context ctx)
     syscall_context sc = t->syscall;
     if (sc) {
         umcg_worker worker = umcg_get_worker(t);
+//        umcg_debug("worker 0x%lx entering worker_pause with status %d", worker->id, worker->status);
         worker->status = UMCG_WORKER_PAUSED;
         umcg.syscall_pause = sc->uc.kc.context.pause;
         sc->uc.kc.context.pause = umcg_syscall_pause;
+        umcg_debug("worker 0x%lx set to PAUSED", worker->id);
     }
     umcg.thread_pause(ctx);
 }
 
+//static void umcg_worker_schedule_return(context ctx)
+//{
+//    umcg_worker worker = umcg_get_worker((thread)ctx);
+////    umcg_debug("worker 0x%lx schedule return (current status: %d)", worker->id, worker->status);
+//    if (compare_and_swap_32(&worker->status, UMCG_WORKER_BLOCKED, UMCG_WORKER_IDLE)) {
+//        blockq server_bq = worker->server_bq;
+//        if (server_bq) {
+//            blockq_wake_one(server_bq);
+//            blockq_release(server_bq);
+//        }
+//        umcg_worker_event_idle(worker, UMCG_WE_WAKE);
+////        umcg_debug("worker 0x%lx transitioned from blocked to idle", worker->id);
+//    } else if (kern_now(CLOCK_ID_MONOTONIC_RAW) >= worker->start_time + UMCG_PREEMPT_INTERVAL) {
+//        worker->status = UMCG_WORKER_RUNNABLE;
+//        umcg_worker_event_to_server(worker, UMCG_WE_PREEMPT);
+//    } else {
+//        worker->status = UMCG_WORKER_RUNNING;
+//        umcg.thread_schedule_return(ctx);
+////        umcg_debug("worker 0x%lx continuing execution (setting to RUNNING)", worker->id);
+//    }
+//}
+
 static void umcg_worker_schedule_return(context ctx)
 {
     umcg_worker worker = umcg_get_worker((thread)ctx);
-//    umcg_debug("worker 0x%lx schedule return (current status: %d)", worker->id, worker->status);
+//    umcg_debug("worker 0x%lx schedule_return called with status %d", worker->id, worker->status);
+
     if (compare_and_swap_32(&worker->status, UMCG_WORKER_BLOCKED, UMCG_WORKER_IDLE)) {
         blockq server_bq = worker->server_bq;
         if (server_bq) {
             blockq_wake_one(server_bq);
             blockq_release(server_bq);
+            umcg_debug("worker 0x%lx wake one, release", worker->id, worker->status);
         }
+        umcg_debug("worker 0x%lx CAS BLOCKED->IDLE succeeded, generating WAKE", worker->id);
         umcg_worker_event_idle(worker, UMCG_WE_WAKE);
-//        umcg_debug("worker 0x%lx transitioned from blocked to idle", worker->id);
     } else if (kern_now(CLOCK_ID_MONOTONIC_RAW) >= worker->start_time + UMCG_PREEMPT_INTERVAL) {
+        umcg_debug("worker 0x%lx hit preempt interval, setting RUNNABLE", worker->id);
         worker->status = UMCG_WORKER_RUNNABLE;
         umcg_worker_event_to_server(worker, UMCG_WE_PREEMPT);
     } else {
+        umcg_debug("worker 0x%lx CAS failed and no preempt, setting RUNNING", worker->id);
         worker->status = UMCG_WORKER_RUNNING;
         umcg.thread_schedule_return(ctx);
-//        umcg_debug("worker 0x%lx continuing execution (setting to RUNNING)", worker->id);
     }
 }
 

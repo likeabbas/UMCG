@@ -351,26 +351,39 @@ impl EventRoutingServer {
                 return;
             }
 
+            let mut last_debug_print = Instant::now();
             while !self.done.load(Ordering::Relaxed) {
-                let mut events = [0u64; 10];
-                log_cpu_affinity(self.id);
+                // Check if 500ms have elapsed since last print
+                if last_debug_print.elapsed() >= Duration::from_millis(500) {
+                    debug!("EventRoutingServer loop checkin");
+                    last_debug_print = Instant::now();
+                }
 
-                match umcg_wait_retry_simple(
+                let mut events = [0u64; 10];
+                // log_cpu_affinity(self.id);
+
+                match umcg_wait_retry_timeout(
                     0,
                     Some(&mut events),
                     10i32,
+                    1_000_000_000,
+
                 ) {
-                    WaitNoTimeoutResult::Events(ret) => {
+                    WaitResult::Events(ret) => {
                         if ret != 0 {
                             let errno = unsafe { *libc::__errno_location() };
                             debug!("Server {}: Wait failed with error {} ({})", self.id, ret, std::io::Error::from_raw_os_error(errno));
                             continue;
                         }
                     }
-                    WaitNoTimeoutResult::ProcessForwarded => {
+                    WaitResult::ProcessForwarded => {
                         continue;
                     }
-                    WaitNoTimeoutResult::ResourceBusy => {
+                    WaitResult::ResourceBusy => {
+                        debug!("EventRoutingServer: Resource busy");
+                        continue;
+                    }
+                    WaitResult::Timeout => {
                         continue;
                     }
                 }
@@ -724,8 +737,16 @@ impl Server {
         const MAX_EVENTS_PER_BATCH: usize = 32; // We can adjust this batch size
         let mut debug_counter: u64 = 0;
 
+        let mut last_debug_print = Instant::now();
         while !self.done.load(Ordering::Relaxed) {
+            // Check if 500ms have elapsed since last print
             let mut print_debug = false;
+            if last_debug_print.elapsed() >= Duration::from_millis(500) {
+                debug!("Server {} event loop check in", self.id);
+                last_debug_print = Instant::now();
+                print_debug = true;
+            }
+
             if debug_counter % DEBUG_HASH == 0 {
                 // debug!("Server {} state dump:", self.id);
                 // debug!("  Pending queue size: {}", self.worker_queues.pending.len());
@@ -735,7 +756,7 @@ impl Server {
                 //     debug!("  Worker {}: {:?}", worker_id, *status);
                 // }
                 // debug!("Pending Task Queue size: {}", self.manage_tasks.num_pending_tasks());
-                print_debug = true;
+                // print_debug = true;
             }
 
             // Increment and possibly reset debug counter

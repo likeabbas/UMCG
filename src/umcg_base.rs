@@ -196,11 +196,11 @@ pub fn umcg_wait_retry_timeout(
     mut events_buf: Option<&mut [u64]>,
     event_sz: i32,
     timeout_ns: u64,
-    debug_count: u64,  // Current count
-    debug_hash: u64,   // Print debug if count % hash == 0
+    // debug_count: u64,  // Current count
+    // debug_hash: u64,   // Print debug if count % hash == 0
 ) -> WaitResult {
     let mut flags = 0;
-    let should_debug = debug_count % debug_hash == 0;
+    // let should_debug = debug_count % debug_hash == 0;
 
     // Calculate absolute timeout
     let now = SystemTime::now()
@@ -208,10 +208,10 @@ pub fn umcg_wait_retry_timeout(
         .unwrap();
     let abs_timeout = now.as_nanos() as u64 + timeout_ns;
 
-    if should_debug {
-        debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {}, timeout: {} ns !!!!!!!!!!",
-            worker_id, flags, timeout_ns);
-    }
+    // if should_debug {
+    //     debug!("!!!!!!!!!! UMCG WAIT RETRY START - worker: {}, flags: {}, timeout: {} ns !!!!!!!!!!",
+    //         worker_id, flags, timeout_ns);
+    // }
 
     let events = events_buf.as_deref_mut();
     let ret = sys_umcg_ctl(
@@ -223,9 +223,9 @@ pub fn umcg_wait_retry_timeout(
         event_sz,
     );
 
-    if should_debug {
-        debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
-    }
+    // if should_debug {
+    //     debug!("!!!!!!!!!! UMCG WAIT RETRY RETURNED: {} !!!!!!!!!!", ret);
+    // }
 
     let errno = unsafe { *libc::__errno_location() };
 
