@@ -9,6 +9,7 @@ dependencies = [
  "backtrace",
  "chrono",
  "crossbeam",
+ "crossbeam-channel",
  "crossbeam-queue",
  "dashmap",
  "io-uring",

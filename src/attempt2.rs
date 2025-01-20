@@ -16,6 +16,7 @@ use std::ops::Deref;
 use std::os::unix::io::AsRawFd;
 use std::panic;
 use backtrace::Backtrace;
+use crossbeam_channel::bounded;
 use dashmap::DashMap;
 use ringbuf::producer::Producer;
 use ringbuf::{traits::*, HeapRb};
@@ -307,7 +308,7 @@ impl ContextSwitchMetrics {
 struct EventRoutingServer {
     id: usize,
     worker_to_server: HashMap<u64, u64>,
-    server_sender: HashMap<u64, ringbuf::HeapProd<u64>>,
+    server_senders: HashMap<u64, crossbeam_channel::Sender<u64>>,
     done: Arc<AtomicBool>
 }
 
@@ -315,10 +316,10 @@ impl EventRoutingServer {
     pub fn new(
         id: usize,
         worker_to_server: HashMap<u64, u64>,
-        server_sender: HashMap<u64, ringbuf::HeapProd<u64>>,
+        server_senders:  HashMap<u64, crossbeam_channel::Sender<u64>>,
         done: Arc<AtomicBool>
     ) -> Self {
-        Self { id, worker_to_server, server_sender, done }
+        Self { id, worker_to_server, server_senders, done }
     }
 
     fn start(mut self, wait: Arc<AtomicBool>) -> JoinHandle<()> {
@@ -393,15 +394,13 @@ impl EventRoutingServer {
                     let server_id = self.worker_to_server[&worker_id];
                     debug!("EventRoutingServer: Routing {:?} event for worker {} to server {} (raw: {:#x})", UmcgEventType::from_u64(event & UMCG_WORKER_EVENT_MASK).unwrap_or(UmcgEventType::Exit), worker_id, server_id, event);
 
-                    if let Some(producer) = self.server_sender.get_mut(&server_id) {
-                        match producer.try_push(event) {
-                            Ok(()) => {
-                                debug!("EventRoutingServer: Successfully pushed event {} (type {}) for worker {} to server {}", i, event & UMCG_WORKER_EVENT_MASK, worker_id, server_id);
+                    if let Some(sender) = self.server_senders.get(&server_id) {
+                        match sender.send(event) {
+                            Ok(_) => {
+                                debug!("Successfully sent event to server {}", server_id);
                             }
-                            Err(push_error) => {
-                                debug!("EventRoutingServer: Failed to push event {} (type {}) for worker {} to server {} - buffer full", i, event & UMCG_WORKER_EVENT_MASK, worker_id, server_id);
-                                // push_error.0 contains the failed value
-                                debug!("EventRoutingServer: Failed event raw value: {:#x}", push_error);
+                            Err(e) => {
+                                debug!("Failed to send event: {}", e);
                             }
                         }
                     } else {
@@ -422,7 +421,7 @@ struct Server {
     metrics: Arc<ContextSwitchMetrics>,
     router: Arc<ServerRouter>,
     queue: Arc<ServerQueue>,
-    event_consumer: ringbuf::HeapCons<u64>,
+    event_consumer: crossbeam_channel::Receiver<u64>,
     done: Arc<AtomicBool>
 }
 
@@ -434,7 +433,7 @@ impl Server {
         manage_tasks: Arc<dyn ManageTask>,
         worker_queues: Arc<WorkerQueues>,
         router: Arc<ServerRouter>,
-        event_consumer: ringbuf::HeapCons<u64>,
+        event_consumer: crossbeam_channel::Receiver<u64>,
         done: Arc<AtomicBool>,
     ) -> Self {
         let queue = router.get_server_queue(id)
@@ -770,10 +769,7 @@ impl Server {
                 debug!("Server {}: Task scheduling failed: {:?}", self.id, e);
             }
 
-            let mut event_buffer = [0u64; MAX_EVENTS_PER_BATCH];
-            // Process batch of events from the ring buffer
-            let count = self.event_consumer.pop_slice(&mut event_buffer);
-            for &event in event_buffer.iter().take(count) {
+            while let Ok(event) = self.event_consumer.try_recv() {
                 let worker_id = (event >> UMCG_WORKER_ID_SHIFT) << UMCG_WORKER_ID_SHIFT;
 
                 // if debug_counter % DEBUG_HASH == 0 {
@@ -1339,7 +1335,7 @@ impl Executor {
         worker_queues: Arc<WorkerQueues>,
         manage_tasks: Arc<dyn ManageTask>,
         router: Arc<ServerRouter>,
-        event_consumer: ringbuf::HeapCons<u64>,
+        event_consumer: crossbeam_channel::Receiver<u64>,
         done: Arc<AtomicBool>,
         wait: Arc<AtomicBool>,
     ) {
@@ -1773,7 +1769,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     const WORKER_COUNT: usize = 2;
     const SERVER_COUNT: usize = 2;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
-    const RING_SIZE: usize = 1000;
+    const CHANNEL_SIZE: usize = 10000;
 
     // Create task queue and worker queues
     let router = ServerRouter::new(SERVER_COUNT, QUEUE_CAPACITY);
@@ -1788,14 +1784,14 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     let done = Arc::new(AtomicBool::new(false));
     let wait = Arc::new(AtomicBool::new(true));
 
-    let mut server_producers: HashMap<u64, ringbuf::HeapProd<u64>> = HashMap::new();
-    let mut server_consumers: HashMap<u64, ringbuf::HeapCons<u64>> = HashMap::new();
-    // Initialize ring buffers for each server
+    let mut server_senders: HashMap<u64, crossbeam_channel::Sender<u64>> = HashMap::new();
+    let mut server_receivers: HashMap<u64, crossbeam_channel::Receiver<u64>> = HashMap::new();
+
+    // Create channels for each server
     for server_id in 0..SERVER_COUNT {
-        let ring = HeapRb::<u64>::new(RING_SIZE);
-        let (prod, cons) = ring.split();
-        server_producers.insert(server_id as u64, prod);
-        server_consumers.insert(server_id as u64, cons);
+        let (sender, receiver) = bounded(CHANNEL_SIZE);
+        server_senders.insert(server_id as u64, sender);
+        server_receivers.insert(server_id as u64, receiver);
     }
 
     let mut worker_to_server: HashMap<u64, u64> = HashMap::new();
@@ -1812,7 +1808,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
             worker_queues.clone(),
             task_queue.clone(),
             router.clone(),
-            server_consumers.remove(&(server_id as u64)).unwrap(),
+            server_receivers.remove(&(server_id as u64)).unwrap(),
             done.clone(),
             wait.clone(),
         );
@@ -1849,7 +1845,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     let event_routing_server = EventRoutingServer::new(
         event_routing_server_id as usize,
         worker_to_server,
-        server_producers,
+        server_senders,
         done.clone()
     );
 
@@ -1871,22 +1867,26 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
         let parent_id = i;
 
         parent_task_handle.clone().submit("dynamic_parent_task".parse().unwrap(), Box::new(move || {
-            debug!("!!!! Initial task {}: STARTING task !!!!", parent_id);
+            let tid = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+            let worker_id = (tid as u64) << UMCG_WORKER_ID_SHIFT;
+            debug!("!!!! Initial task {}: STARTING task on Worker {} !!!!", parent_id, worker_id);
 
-            debug!("!!!! Initial task {}: ABOUT TO SLEEP !!!!", parent_id);
+            debug!("!!!! Initial task {} on Worker {}: ABOUT TO SLEEP !!!!", parent_id, worker_id);
             thread::sleep(Duration::from_secs(2));
-            debug!("!!!! Initial task {}: WOKE UP FROM SLEEP !!!!", parent_id);
+            debug!("!!!! Initial task {} on Worker {}: WOKE UP FROM SLEEP !!!!", parent_id, worker_id);
 
-            debug!("!!!! Initial task {}: PREPARING to spawn child task !!!!", parent_id);
+            debug!("!!!! Initial task {} on Worker {}: PREPARING to spawn child task !!!!", parent_id, worker_id);
 
             // Clone task_handle before moving into the child task closure
             parent_task_handle.submit("dynamic_child_task".parse().unwrap(), Box::new(move || {
-                debug!("!!!! Child task of initial task {}: STARTING work !!!!", parent_id);
+                let child_tid = unsafe { libc::syscall(libc::SYS_gettid) as pid_t };
+                let child_worker_id = (child_tid as u64) << UMCG_WORKER_ID_SHIFT;
+                debug!("!!!! Child task of initial task {} on Worker {}: STARTING work !!!!", parent_id, child_worker_id);
                 thread::sleep(Duration::from_secs(1));
-                debug!("!!!! Child task of initial task {}: COMPLETED !!!!", parent_id);
+                debug!("!!!! Child task of initial task {} on Worker {}: COMPLETED !!!!", parent_id, child_worker_id);
             }));
 
-            debug!("!!!! Initial task {}: COMPLETED !!!!", parent_id);
+            debug!("!!!! Initial task {} on Worker {}: COMPLETED !!!!", parent_id, worker_id);
         }));
     }
 
@@ -1965,7 +1965,7 @@ pub fn run_echo_server_demo() -> i32 {
     const QUEUE_CAPACITY: usize = 100000;
     const SERVER_COUNT: usize = 1;
     const ACCEPT_TASK_COUNT: usize = 10;  // Number of TCP accept tasks
-    const RING_SIZE: usize = 1000;
+    const CHANNEL_SIZE: usize = 1000;
 
     let router = ServerRouter::new(SERVER_COUNT, QUEUE_CAPACITY);
 
@@ -1979,14 +1979,14 @@ pub fn run_echo_server_demo() -> i32 {
 
     let done = Arc::new(AtomicBool::new(false));
     let wait = Arc::new(AtomicBool::new(false));
-    let mut server_producers: HashMap<u64, ringbuf::HeapProd<u64>> = HashMap::new();
-    let mut server_consumers: HashMap<u64, ringbuf::HeapCons<u64>> = HashMap::new();
-    // Initialize ring buffers for each server
+    let mut server_senders: HashMap<u64, crossbeam_channel::Sender<u64>> = HashMap::new();
+    let mut server_receivers: HashMap<u64, crossbeam_channel::Receiver<u64>> = HashMap::new();
+
+    // Create channels for each server
     for server_id in 0..SERVER_COUNT {
-        let ring = HeapRb::<u64>::new(RING_SIZE);
-        let (prod, cons) = ring.split();
-        server_producers.insert(server_id as u64, prod);
-        server_consumers.insert(server_id as u64, cons);
+        let (sender, receiver) = bounded(CHANNEL_SIZE);
+        server_senders.insert(server_id as u64, sender);
+        server_receivers.insert(server_id as u64, receiver);
     }
 
     let mut worker_to_server: HashMap<u64, u64> = HashMap::new();
@@ -2003,7 +2003,7 @@ pub fn run_echo_server_demo() -> i32 {
             worker_queues.clone(),
             task_queue.clone(),
             router.clone(),
-            server_consumers.remove(&(server_id as u64)).unwrap(),
+            server_receivers.remove(&(server_id as u64)).unwrap(),
             done.clone(),
             wait.clone(),
         );
@@ -2038,7 +2038,7 @@ pub fn run_echo_server_demo() -> i32 {
     let event_routing_server = EventRoutingServer::new(
         event_routing_server_id as usize,
         worker_to_server,
-        server_producers,
+        server_senders,
         done.clone()
     );
 

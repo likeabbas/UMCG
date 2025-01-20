@@ -120,7 +120,7 @@ static void umcg_worker_event_to_server(umcg_worker worker, enum umcg_event_type
     blockq bq = worker->server_bq;
     blockq_wake_one(bq);
     blockq_release(bq);
-    umcg_debug("sending event type %d for worker 0x%lx to server", event, worker->id);
+    umcg_debug("sending event type %d for worker %lu to server", event, worker->id);
 }
 
 closure_func_basic(timer_handler, void, umcg_worker_timeout,
@@ -144,7 +144,7 @@ static void umcg_syscall_pause(context ctx)
     umcg_worker worker = umcg_get_worker(t);
     if ((worker != INVALID_ADDRESS) &&
         compare_and_swap_32(&worker->status, UMCG_WORKER_PAUSED, UMCG_WORKER_BLOCKED)) {
-        umcg_debug("worker 0x%lx blocked in syscall", worker->id);
+        umcg_debug("worker %lu blocked in syscall", worker->id);
         blockq bq = worker->server_bq;
         worker->server_bq = 0;
         *worker->server_event = worker->id | UMCG_WE_BLOCK;
@@ -171,7 +171,7 @@ static void umcg_worker_pause(context ctx)
 static void umcg_worker_schedule_return(context ctx)
 {
     umcg_worker worker = umcg_get_worker((thread)ctx);
-//    umcg_debug("worker 0x%lx schedule return (current status: %d)", worker->id, worker->status);
+//    umcg_debug("worker %lu schedule return (current status: %d)", worker->id, worker->status);
     if (compare_and_swap_32(&worker->status, UMCG_WORKER_BLOCKED, UMCG_WORKER_IDLE)) {
         blockq server_bq = worker->server_bq;
         if (server_bq) {
@@ -179,14 +179,14 @@ static void umcg_worker_schedule_return(context ctx)
             blockq_release(server_bq);
         }
         umcg_worker_event_idle(worker, UMCG_WE_WAKE);
-//        umcg_debug("worker 0x%lx transitioned from blocked to idle", worker->id);
+//        umcg_debug("worker %lu transitioned from blocked to idle", worker->id);
     } else if (kern_now(CLOCK_ID_MONOTONIC_RAW) >= worker->start_time + UMCG_PREEMPT_INTERVAL) {
         worker->status = UMCG_WORKER_RUNNABLE;
         umcg_worker_event_to_server(worker, UMCG_WE_PREEMPT);
     } else {
         worker->status = UMCG_WORKER_RUNNING;
         umcg.thread_schedule_return(ctx);
-//        umcg_debug("worker 0x%lx continuing execution (setting to RUNNING)", worker->id);
+//        umcg_debug("worker %lu continuing execution (setting to RUNNING)", worker->id);
     }
 }
 
@@ -268,8 +268,8 @@ static sysreturn umcg_server_get_events(u64 *events, u64 event_sz)
         if (!l)
             break;
         umcg_worker worker = struct_from_field(l, umcg_worker, l);
-        umcg_debug("worker 0x%lx event %ld", worker->id, worker->event);
-        umcg_debug("server getting event type %d for worker 0x%lx (status: %d)",
+        umcg_debug("worker %lu event %ld", worker->id, worker->event);
+        umcg_debug("server getting event type %d for worker %lu (status: %d)",
                            worker->event, worker->id, worker->status);
         u64 event = worker->id | worker->event;
         if (!set_user_value(events, event)) {
@@ -501,7 +501,7 @@ static sysreturn umcg_ctx_switch(thread t, int next_tid, u64 abs_timeout, u64 *e
             return -ENOMEM;
         if (!compare_and_swap_32(&next->status, UMCG_WORKER_RUNNABLE, UMCG_WORKER_RUNNING) &&
             !compare_and_swap_32(&next->status, UMCG_WORKER_WAITING, UMCG_WORKER_RUNNING)) {
-            umcg_debug("server->worker ctx switch failed: worker 0x%lx in invalid state %d",
+            umcg_debug("server->worker ctx switch failed: worker %lu in invalid state %d",
                       next->id, next->status);
             deallocate_closure(ba);
             return -EINVAL;
@@ -510,14 +510,14 @@ static sysreturn umcg_ctx_switch(thread t, int next_tid, u64 abs_timeout, u64 *e
         blockq server_bq = t->thread_bq;
         next->server_bq = server_bq;
         blockq_reserve(server_bq);
-        umcg_debug("server->worker ctx switch: worker 0x%lx now RUNNING", next->id);
+        umcg_debug("server->worker ctx switch: worker %lu now RUNNING", next->id);
     } else {
         if (!compare_and_swap_32(&next->status, UMCG_WORKER_RUNNABLE, UMCG_WORKER_RUNNING)) {
-            umcg_debug("worker->worker ctx switch failed: target worker 0x%lx not RUNNABLE (status: %d)",
+            umcg_debug("worker->worker ctx switch failed: target worker %lu not RUNNABLE (status: %d)",
                       next->id, next->status);
             return -EINVAL;
         }
-        umcg_debug("worker->worker ctx switch: setting worker 0x%lx to IDLE and worker 0x%lx to RUNNING",
+        umcg_debug("worker->worker ctx switch: setting worker %lu to IDLE and worker %lu to RUNNING",
                    worker->id, next->id);
         worker->status = UMCG_WORKER_IDLE;
         umcg_worker_event_idle(worker, UMCG_WE_WAIT);
