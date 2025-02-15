@@ -1,816 +1,635 @@
 ➜  /app git:(master) ✗ ops run -c config.json -v target/x86_64-unknown-linux-musl/debug/UMCG
 running local instance
 booting /root/.ops/images/UMCG ...
-[1.102907] en1: assigned 10.0.2.15
+[1.088802] en1: assigned 10.0.2.15
 cargo:rustc-cfg=UMCG_DEBUG
 cargo:rustc-env=CFLAGS=-DUMCG_DEBUG
 Running full test suite...
 what the fuck
-[949.631] Running dynamic task attempt2 test...
-[950.18881555] Registered worker 96 to server 0
-[950.63654503] Registered worker 128 to server 0
-[950.83003621] Worker 96 CPU affinity set to CPU 0
-[950.85277389] Worker 128 CPU affinity set to CPU 0
-[950.111231212] Worker 0 spawned with tid 3 (id: 96)
-[950.114632599] Worker 0 starting UMCG registration with tid 3
-[950.116617111] Worker 1 spawned with tid 4 (id: 128)
-[950.118598259] Worker 1 starting UMCG registration with tid 4
-[1.796712, 6, umcg] cmd 1
-[1.798582, 7, umcg] cmd 1
-[2.724753] en1: assigned FE80::20E6:12FF:FE20:5FDA
-[953.60463128] Creating new server with ID: 0. Router pointer = 0xba9def6faa0, queue pointer = 0xba9def6fd00, queue events pointer = 0xba9def6fd00
-[953.68475297] Executor: Starting initial server
-[953.79982280] Starting server 0
-[953.82250830] Server 0 CPU affinity set to CPU 0
-[4.762344, 2, umcg] cmd 2
-[953.86859709] Server 0: UMCG registration complete
-[953.88077733] Server 0: Waiting for worker registration events
-[953.094] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
-[4.778766, 6, umcg] worker 0x80 event 2
-[4.780351, 6, umcg] server getting event type 2 for worker 0x80 (status: 0)
-[953.106] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
-[953.109814625] Server 0: before event declaration
-[953.111542114] Server 0: Got event type 2 for worker tid 4 (id: 128)
-[953.113815248] Server 0: Got wake event for worker 128, doing context switch to tid 4
-[4.793594, 6, umcg] cmd 6
-[4.794556, 6, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
-[4.796562, 6, umcg] server->worker ctx switch: worker 0x80 now RUNNING
-[4.798394, 6, umcg] ctx switch complete - proceeding with server wait
-[953.124244203] Worker 1 UMCG registration complete
-[4.809680, 7, umcg] sending event type 3 for worker 0x80 to server
-[953.133900964] Server 0: Context switch returned 0 for worker tid 4 (id: 128)
-[953.139627807] Server 0: Worker 128 status set to waiting and added to pending queue
-[953.143] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
-[4.824854, 7, umcg] worker 0x60 event 2
-[4.825135, 7, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[953.148] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
-[953.149475130] Server 0: before event declaration
-[953.150437982] Server 0: Got event type 2 for worker tid 3 (id: 96)
-[953.152528845] Server 0: Got wake event for worker 96, doing context switch to tid 3
-[4.832082, 7, umcg] cmd 6
-[4.832261, 7, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[4.832870, 7, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[4.833364, 7, umcg] ctx switch complete - proceeding with server wait
-[953.155860405] Worker 0 UMCG registration complete
-[4.835715, 7, umcg] sending event type 3 for worker 0x60 to server
-[953.157722817] Server 0: Context switch returned 0 for worker tid 3 (id: 96)
-[953.160452851] Server 0: Worker 96 status set to waiting and added to pending queue
-[953.163468824] Server 0: Worker registration complete, registered 2 workers
-[953.198033026] Registered worker 224 to server 1
-[953.198515964] Worker 224 CPU affinity set to CPU 1
-[953.205817281] Registered worker 192 to server 1
-[953.206063041] Worker 192 CPU affinity set to CPU 1
-[953.208729489] Worker 1 spawned with tid 7 (id: 224)
-[953.209145623] Worker 1 starting UMCG registration with tid 7
-[4.888555, 4, umcg] cmd 1
-[953.211774183] Worker 0 spawned with tid 6 (id: 192)
-[953.212050517] Worker 0 starting UMCG registration with tid 6
-[4.891384, 3, umcg] cmd 1
-[956.211000766] Creating new server with ID: 1. Router pointer = 0xba9def6faa0, queue pointer = 0x197286b100, queue events pointer = 0x197286b100
-[956.215167667] Executor: Starting initial server
-[956.222368143] Starting server 1
-[956.223236448] Server 1 CPU affinity set to CPU 1
-[7.902469, 5, umcg] cmd 2
-[956.224009958] Server 1: UMCG registration complete
-[956.224572914] Server 1: Waiting for worker registration events
-[956.225] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
-[7.906404, 5, umcg] worker 0xe0 event 2
-[7.906754, 5, umcg] server getting event type 2 for worker 0xe0 (status: 0)
-[956.228] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
-[956.229341537] Server 1: before event declaration
-[956.229850074] Server 1: Got event type 2 for worker tid 7 (id: 224)
-[956.230770310] Server 1: Got wake event for worker 224, doing context switch to tid 7
-[7.909986, 5, umcg] cmd 6
-[7.910238, 5, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
-[7.910724, 5, umcg] server->worker ctx switch: worker 0xe0 now RUNNING
-[7.911482, 5, umcg] ctx switch complete - proceeding with server wait
-[956.234026386] Worker 1 UMCG registration complete
-[7.917397, 5, umcg] sending event type 3 for worker 0xe0 to server
-[956.239953398] Server 1: Context switch returned 0 for worker tid 7 (id: 224)
-[956.246415278] Server 1: Worker 224 status set to waiting and added to pending queue
-[956.250] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
-[7.929670, 5, umcg] worker 0xc0 event 2
-[7.930111, 5, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[956.251] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
-[956.252138317] Server 1: before event declaration
-[956.252361745] Server 1: Got event type 2 for worker tid 6 (id: 192)
-[956.255320082] Server 1: Got wake event for worker 192, doing context switch to tid 6
-[7.934638, 5, umcg] cmd 6
-[7.934846, 5, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[7.935524, 5, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[7.936354, 5, umcg] ctx switch complete - proceeding with server wait
-[956.258144567] Worker 0 UMCG registration complete
-[7.938093, 5, umcg] sending event type 3 for worker 0xc0 to server
-[956.259837385] Server 1: Context switch returned 0 for worker tid 6 (id: 192)
-[956.262847166] Server 1: Worker 192 status set to waiting and added to pending queue
-[956.264478057] Server 1: Worker registration complete, registered 2 workers
-[956.282101345] Submitting initial tasks...
-[956.282852230] Starting server 2
-[956.284104240] Server 2 CPU affinity set to CPU 2
-[7.963724, 7, umcg] cmd 2
-[956.285647799] Server 2: UMCG registration complete
-Server 1 workers: [192, 224]
-Server 0 workers: [128, 96]
-[956.314109495] Creating task of type dynamic_parent_task at Instant { tv_sec: 7, tv_nsec: 969413720 }
+[384.632] Running dynamic task attempt2 test...
+[385.2286775] Registered worker 96 to server 0
+[385.11598850] Registered worker 128 to server 0
+[385.37552141] Worker 128 CPU affinity set to CPU 0
+[385.45987132] Worker 96 CPU affinity set to CPU 0
+[385.74272376] Worker 1 spawned with tid 4 (id: 128)
+[385.78785716] Worker 1 starting UMCG registration with tid 4
+[385.89616480] Worker 0 spawned with tid 3 (id: 96)
+[1.752717, 7, umcg] cmd 1
+[385.90317992] Worker 0 starting UMCG registration with tid 3
+[1.763828, 6, umcg] cmd 1
+[2.717544] en1: assigned FE80::3059:8DFF:FE16:CD13
+[388.40202139] Creating new server with ID: 0. Router pointer = 0x13b3084ebaa0, queue pointer = 0x13b3084ebd00, queue events pointer = 0x13b3084ebd00
+[388.47361839] Executor: Starting initial server
+[388.59318632] Starting server 0
+[388.61551721] Server 0 CPU affinity set to CPU 0
+[4.733198, 6, umcg] cmd 2
+[388.64169839] Server 0: UMCG registration complete
+[388.65341778] Server 0: Waiting for worker registration events
+[388.070] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
+[4.746342, 6, umcg] worker 128 event 2
+[4.748352, 6, umcg] server getting event type 2 for worker 128 (status: 0)
+[388.082] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
+[388.86381974] Server 0: before event declaration
+[388.87753330] Server 0: Got event type 2 for worker tid 4 (id: 128)
+[388.88930193] Server 0: Got wake event for worker 128, doing context switch to tid 4
+[4.760354, 6, umcg] cmd 6
+[4.761039, 6, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
+[4.762954, 6, umcg] server->worker ctx switch: worker 128 now RUNNING
+[4.764695, 6, umcg] ctx switch complete - proceeding with server wait
+[388.97707155] Worker 1 UMCG registration complete
+[4.782219, 7, umcg] sending event type 3 for worker 128 to server
+[388.113985981] Server 0: Context switch returned 0 for worker tid 4 (id: 128)
+[388.119931261] Server 0: Worker 128 status set to waiting and added to pending queue
+[388.124] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
+[4.798101, 7, umcg] worker 96 event 2
+[4.798622, 7, umcg] server getting event type 2 for worker 96 (status: 0)
+[388.130] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
+[388.131388470] Server 0: before event declaration
+[388.132398402] Server 0: Got event type 2 for worker tid 3 (id: 96)
+[388.134564487] Server 0: Got wake event for worker 96, doing context switch to tid 3
+[4.805892, 7, umcg] cmd 6
+[4.806052, 7, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
+[4.806705, 7, umcg] server->worker ctx switch: worker 96 now RUNNING
+[4.807142, 7, umcg] ctx switch complete - proceeding with server wait
+[388.137141622] Worker 0 UMCG registration complete
+[4.809142, 7, umcg] sending event type 3 for worker 96 to server
+[388.139395275] Server 0: Context switch returned 0 for worker tid 3 (id: 96)
+[388.142752705] Server 0: Worker 96 status set to waiting and added to pending queue
+[388.144814374] Server 0: Worker registration complete, registered 2 workers
+[388.193280929] Registered worker 192 to server 1
+[388.194441233] Worker 192 CPU affinity set to CPU 1
+[388.193330700] Registered worker 224 to server 1
+[388.197183754] Worker 224 CPU affinity set to CPU 1
+[388.202117558] Worker 0 spawned with tid 6 (id: 192)
+[388.202460831] Worker 0 starting UMCG registration with tid 6
+[4.873784, 0, umcg] cmd 1
+[388.202541786] Worker 1 spawned with tid 7 (id: 224)
+[388.204818659] Worker 1 starting UMCG registration with tid 7
+[4.876189, 1, umcg] cmd 1
+[391.195125000] Creating new server with ID: 1. Router pointer = 0x13b3084ebaa0, queue pointer = 0xf4c90d6100, queue events pointer = 0xf4c90d6100
+[391.201417416] Executor: Starting initial server
+[391.208906922] Starting server 1
+[391.210464180] Server 1 CPU affinity set to CPU 1
+[7.881911, 7, umcg] cmd 2
+[391.211892644] Server 1: UMCG registration complete
+[391.212808298] Server 1: Waiting for worker registration events
+[391.214] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
+[7.886654, 7, umcg] worker 192 event 2
+[7.887105, 7, umcg] server getting event type 2 for worker 192 (status: 0)
+[391.217] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
+[391.217565082] Server 1: before event declaration
+[391.218247912] Server 1: Got event type 2 for worker tid 6 (id: 192)
+[391.219382053] Server 1: Got wake event for worker 192, doing context switch to tid 6
+[7.891119, 7, umcg] cmd 6
+[7.891280, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
+[7.891608, 7, umcg] server->worker ctx switch: worker 192 now RUNNING
+[7.891891, 7, umcg] ctx switch complete - proceeding with server wait
+[391.221722261] Worker 0 UMCG registration complete
+[7.893168, 7, umcg] sending event type 3 for worker 192 to server
+[391.222788479] Server 1: Context switch returned 0 for worker tid 6 (id: 192)
+[391.223529190] Server 1: Worker 192 status set to waiting and added to pending queue
+[391.226] !!!!!!!!!! UMCG WAIT RETRY START - worker: 0, flags: 0 !!!!!!!!!!
+[7.897815, 7, umcg] worker 224 event 2
+[7.897942, 7, umcg] server getting event type 2 for worker 224 (status: 0)
+[391.228] !!!!!!!!!! UMCG WAIT RETRY RETURNED: 0 !!!!!!!!!!
+[391.228859900] Server 1: before event declaration
+[391.229093930] Server 1: Got event type 2 for worker tid 7 (id: 224)
+[391.230246317] Server 1: Got wake event for worker 224, doing context switch to tid 7
+[7.901597, 7, umcg] cmd 6
+[7.901707, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
+[7.901949, 7, umcg] server->worker ctx switch: worker 224 now RUNNING
+[7.902588, 7, umcg] ctx switch complete - proceeding with server wait
+[391.232667576] Worker 1 UMCG registration complete
+[7.905645, 1, umcg] sending event type 3 for worker 224 to server
+[391.236017137] Server 1: Context switch returned 0 for worker tid 7 (id: 224)
+[391.242285755] Server 1: Worker 224 status set to waiting and added to pending queue
+[391.245071238] Server 1: Worker registration complete, registered 2 workers
+[391.259931833] Starting server 2
+[391.262088794] Submitting initial tasks...
+[391.263185957] Server 2 CPU affinity set to CPU 2
+[7.936050, 0, umcg] cmd 2
+[391.267410380] Server 2: UMCG registration complete
+Server 0 workers: [96, 128]
+Server 1 workers: [224, 192]
+Server 0 workers pending queue: ArrayQueue { .. }
+[391.301045739] Creating task of type dynamic_parent_task at Instant { tv_sec: 7, tv_nsec: 958949286 }
+Server 0 workers pending queue: ArrayQueue { .. }
 Server 1 workers pending queue: ArrayQueue { .. }
 Server 1 workers pending queue: ArrayQueue { .. }
-[956.324717602] Server 1: Starting event loop
-Server 0 workers pending queue: ArrayQueue { .. }
-Server 0 workers pending queue: ArrayQueue { .. }
-[956.336868096] Server 0: Starting event loop
-[956.384161889] Adding task db536c6b-afd8-4684-b1f4-382f9d36d774 of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 39615031 }
-[956.423323900] Creating task of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 99859989 }
-[956.427135619] !!!! TRY_SCHEDULE: Found task db536c6b-afd8-4684-b1f4-382f9d36d774 (dynamic_parent_task) for worker 192 created 44.489446ms ago !!!!
-[956.429275341] Adding task 5dfb9195-05bc-43b8-9afa-1291d0d86d25 of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 106015108 }
-[956.438574433] Creating task of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 116489460 }
-[956.441255168] Adding task e61959cb-e40f-417e-b252-b4c45d83dbc3 of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 118679016 }
-[956.441980501] Server 1: Updated worker 192 status to Running for task db536c6b-afd8-4684-b1f4-382f9d36d774
-[956.442376058] Creating task of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 121047286 }
-[956.446648821] Adding task 612e7537-d08f-47f5-9861-0661d962277f of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 124012985 }
-[956.454641240] All tasks submitted, waiting for completion...
-[956.461175678] !!!! TRY_SCHEDULE: Found task 5dfb9195-05bc-43b8-9afa-1291d0d86d25 (dynamic_parent_task) for worker 128 created 16.384101ms ago !!!!
-[956.465052154] Progress: 0/4 tasks completed
-[956.467532624] Server 0: Updated worker 128 status to Running for task 5dfb9195-05bc-43b8-9afa-1291d0d86d25
-[956.468735629] Server 1: Sent task db536c6b-afd8-4684-b1f4-382f9d36d774 to worker 192 after 104.682813ms in queue
-[956.469831260] Server 1: Context switching to worker 192 to start task db536c6b-afd8-4684-b1f4-382f9d36d774
-[8.149286, 5, umcg] cmd 6
-[8.149342, 5, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[8.149699, 5, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[8.149948, 5, umcg] ctx switch complete - proceeding with server wait
-[956.474717253] Server 0: Sent task 5dfb9195-05bc-43b8-9afa-1291d0d86d25 to worker 128 after 47.116201ms in queue
-[956.474715010] Worker 0 executing task
-[956.475654310] Server 0: Context switching to worker 128 to start task 5dfb9195-05bc-43b8-9afa-1291d0d86d25
-[8.154805, 4, umcg] cmd 6
-[8.154855, 4, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
-[8.155259, 4, umcg] server->worker ctx switch: worker 0x80 now RUNNING
-[8.155367, 4, umcg] ctx switch complete - proceeding with server wait
-[956.476780467] Starting execution of task after 185.322978ms
-[956.477821875] Worker 1 executing task
-[956.478632787] Starting execution of task after 57.216014ms
-[956.480024158] !!!! Initial task 1: STARTING task on Worker 128 !!!!
-[8.158951, 5, umcg] worker 0xc0 blocked in syscall
-[956.482123505] !!!! Initial task 1 on Worker 128: ABOUT TO SLEEP !!!!
-[956.483638001] Server 1: Context switch returned 0 for worker 192 running task db536c6b-afd8-4684-b1f4-382f9d36d774
-[8.162786, 4, umcg] worker 0x80 blocked in syscall
-[956.485135188] Server 0: Context switch returned 0 for worker 128 running task 5dfb9195-05bc-43b8-9afa-1291d0d86d25
-[8.178113, 7, umcg] worker 0xc0 event 2
-[8.190368, 7, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[956.517606772] Server 0: Switch events converted: [Some(Block), None]
-[956.517639686] Server 1: Switch events converted: [Some(Block), None]
-[956.537470279] Server 1: Got event Some(Block) from context switch while running task db536c6b-afd8-4684-b1f4-382f9d36d774
-[956.537499244] Server 0: Got event Some(Block) from context switch while running task 5dfb9195-05bc-43b8-9afa-1291d0d86d25
-[956.540611279] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 0, caller: try_schedule_tasks
-[956.541027169] Server 0: Processing event type 1 from worker 128 (raw event: 129). depth: 0, caller: try_schedule_tasks
-[956.542927275] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[956.545053147] Server 1: Worker 192 current status: Running
-[956.545190705] Server 0: Worker 128 current status: Running
-[956.548085700] Server 1: Worker 192 blocked while in running queue
-[956.548636905] Server 0: Worker 128 blocked while in running queue
-[956.552164536] Server 0: Processing BLOCK for worker 128 in state Running
-[956.552204765] Server 1: Processing BLOCK for worker 192 in state Running
-[956.555570946] Server 0: Updated worker 128 status from Running to Blocked
-[956.555606982] Server 1: Updated worker 192 status from Running to Blocked
-[956.561779558] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 128, depth 0 !!!!
-[956.561816616] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 0 !!!!
-[956.564218775] Successfully sent event to server 1
-[956.572093727] !!!! TRY_SCHEDULE: Found task e61959cb-e40f-417e-b252-b4c45d83dbc3 (dynamic_parent_task) for worker 96 created 131.598611ms ago !!!!
-[956.573363146] Server 0: Updated worker 96 status to Running for task e61959cb-e40f-417e-b252-b4c45d83dbc3
-[956.574667332] !!!! TRY_SCHEDULE: Found task 612e7537-d08f-47f5-9861-0661d962277f (dynamic_parent_task) for worker 224 created 129.450014ms ago !!!!
-[956.575071568] Server 1: Updated worker 224 status to Running for task 612e7537-d08f-47f5-9861-0661d962277f
-[956.577668140] Progress: 0/4 tasks completed
-[956.581108976] Server 0: Sent task e61959cb-e40f-417e-b252-b4c45d83dbc3 to worker 96 after 141.148535ms in queue
-[956.581901894] Server 0: Context switching to worker 96 to start task e61959cb-e40f-417e-b252-b4c45d83dbc3
-[8.261130, 4, umcg] cmd 6
-[8.261289, 4, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[956.581118874] Server 1: Sent task 612e7537-d08f-47f5-9861-0661d962277f to worker 224 after 135.934471ms in queue
-[8.261483, 4, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[8.262652, 4, umcg] ctx switch complete - proceeding with server wait
-[956.587022528] Server 1: Context switching to worker 224 to start task 612e7537-d08f-47f5-9861-0661d962277f
-[8.266345, 5, umcg] cmd 6
-[8.266426, 5, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
-[8.266706, 5, umcg] server->worker ctx switch: worker 0xe0 now RUNNING
-[8.267174, 5, umcg] ctx switch complete - proceeding with server wait
-[956.588591346] Worker 1 executing task
-[956.588781420] Starting execution of task after 146.572565ms
-[956.589208672] !!!! Initial task 3: STARTING task on Worker 224 !!!!
-[956.589760266] !!!! Initial task 3 on Worker 224: ABOUT TO SLEEP !!!!
-[956.589905723] Worker 0 executing task
-[8.269376, 5, umcg] worker 0xe0 blocked in syscall
-[956.590996381] Server 1: Context switch returned 0 for worker 224 running task 612e7537-d08f-47f5-9861-0661d962277f
-[956.593548482] Starting execution of task after 153.464868ms
-[956.594389771] !!!! Initial task 2: STARTING task on Worker 96 !!!!
-[956.594398062] Server 1: Switch events converted: [Some(Block), None]
-[8.274063, 7, umcg] worker 0x60 blocked in syscall
-[956.597777945] Server 0: Context switch returned 0 for worker 96 running task e61959cb-e40f-417e-b252-b4c45d83dbc3
-[8.277992, 5, umcg] worker 0x60 event 2
-[8.278101, 5, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[956.602886536] Server 1: Got event Some(Block) from context switch while running task 612e7537-d08f-47f5-9861-0661d962277f
-[956.603864699] Server 1: Processing event type 1 from worker 224 (raw event: 225). depth: 0, caller: try_schedule_tasks
-[956.605596675] Server 1: Worker 224 current status: Running
-[956.606745943] Server 0: Switch events converted: [Some(Block), None]
-[956.606833521] Server 1: Worker 224 blocked while in running queue
-[956.608144435] Server 0: Got event Some(Block) from context switch while running task e61959cb-e40f-417e-b252-b4c45d83dbc3
-[956.608635516] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 0, caller: try_schedule_tasks
-[956.609177993] Server 0: Worker 96 current status: Running
-[956.609325888] Server 1: Processing BLOCK for worker 224 in state Running
-[956.609362849] Server 0: Worker 96 blocked while in running queue
-[956.609416634] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
-[956.610478570] Server 1: Updated worker 224 status from Running to Blocked
-[956.610809176] Server 0: Processing BLOCK for worker 96 in state Running
-[956.611873162] Server 0: Updated worker 96 status from Running to Blocked
-[956.614583740] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 224, depth 0 !!!!
-[956.614665854] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 0 !!!!
-[956.617980495] Successfully sent event to server 0
-[956.623235030] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[956.623254290] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
-[956.623922329] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[956.624404341] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
-[956.624928823] Server 1: Worker 192 current status: Blocked
-[956.625331304] Server 0: Worker 96 current status: Blocked
-[956.626737695] Server 0: Processing WAKE for worker 96 in state Blocked
-[956.626763588] Server 1: Processing WAKE for worker 192 in state Blocked
-[956.627927633] Server 0: Worker 96 woke up from blocked state, resuming task
-[956.627950404] Server 1: Worker 192 woke up from blocked state, resuming task
-[956.629686134] Server 0: Updated worker 96 status from Blocked to Running
-[956.629701152] Server 1: Updated worker 192 status from Blocked to Running
-[956.630723494] Server 0: Context switching to unblocked worker 96 to resume task
-[956.630889627] Server 1: Context switching to unblocked worker 192 to resume task
-[8.310051, 0, umcg] cmd 6
-[8.310333, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[8.310383, 5, umcg] cmd 6
-[8.310810, 0, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[8.311033, 5, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[8.311884, 5, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[8.312033, 0, umcg] ctx switch complete - proceeding with server wait
-[8.313042, 5, umcg] ctx switch complete - proceeding with server wait
-[956.478656436] !!!! Initial task 0: STARTING task on Worker 192 !!!!
-[956.635925026] !!!! Initial task 0 on Worker 192: ABOUT TO SLEEP !!!!
-[8.315346, 5, umcg] worker 0xc0 blocked in syscall
-[956.594905039] !!!! Initial task 2 on Worker 96: ABOUT TO SLEEP !!!!
-[8.316187, 7, umcg] worker 0x60 blocked in syscall
-[956.638236243] Server 0: Context switch for unblocked worker 96 returned 0
-[956.638256089] Server 1: Context switch for unblocked worker 192 returned 0
-[956.642677527] Server 1: Switch events converted: [Some(Block), None]
-[956.642688547] Server 0: Switch events converted: [Some(Block), None]
-[956.644768487] Server 0: Got event Some(Block) from context switch in handle_event
-[956.644792721] Server 1: Got event Some(Block) from context switch in handle_event
-[956.645749527] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 1, caller: handle_event
-[956.645920926] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 1, caller: handle_event
-[956.646416250] Server 0: Worker 96 current status: Running
-[956.646876855] Server 1: Worker 192 current status: Running
-[956.647969267] Server 1: Worker 192 blocked while in running queue
-[956.647623400] Server 0: Worker 96 blocked while in running queue
-[956.649064607] Server 0: Processing BLOCK for worker 96 in state Running
-[956.649257801] Server 0: Updated worker 96 status from Running to Blocked
-[956.648368823] Server 1: Processing BLOCK for worker 192 in state Running
-[956.650370012] Server 1: Updated worker 192 status from Running to Blocked
-[956.650799019] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 1 !!!!
-[956.649905116] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 1 !!!!
-[956.652237496] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[956.652259195] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
-[956.683045421] Progress: 0/4 tasks completed
-[956.787519874] Progress: 0/4 tasks completed
-[956.827839005] Server 1 event loop check in
-[956.838367971] Server 0 event loop check in
-[956.896733108] Progress: 0/4 tasks completed
-[957.2632288] Progress: 0/4 tasks completed
-[957.107710072] Progress: 0/4 tasks completed
-[957.213087304] Progress: 0/4 tasks completed
-[957.317378802] Progress: 0/4 tasks completed
-[957.328272117] Server 1 event loop check in
-[957.338625442] Server 0 event loop check in
-[957.421659915] Progress: 0/4 tasks completed
-[957.625470730] EventRoutingServer loop checkin
-[957.828812698] Server 1 event loop check in
-[957.838809526] Server 0 event loop check in
-[958.329240348] Server 1 event loop check in
-[958.338976445] Server 0 event loop check in
-[10.165676, 0, umcg] worker 0x80 event 2
-[10.166557, 0, umcg] server getting event type 2 for worker 0x80 (status: 0)
-[958.492273279] EventRoutingServer: Routing Wake event for worker 128 to server 0 (raw: 0x82)
-[958.493215458] Successfully sent event to server 0
-[958.493829759] EventRoutingServer loop checkin
-[958.495371172] Server 0: Processing event type from ring buffer 2 for worker 128 (raw: 0x82)
-[958.496147657] Server 0: Processing event type 2 from worker 128 (raw event: 130). depth: 0, caller: run_event_loop
-[958.496716855] Server 0: Worker 128 current status: Blocked
-[958.497398791] Server 0: Processing WAKE for worker 128 in state Blocked
-[958.497940731] Server 0: Worker 128 woke up from blocked state, resuming task
-[958.498540259] Server 0: Updated worker 128 status from Blocked to Running
-[958.498854481] Server 0: Context switching to unblocked worker 128 to resume task
-[10.178085, 0, umcg] cmd 6
-[10.178203, 0, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
-[10.178486, 0, umcg] server->worker ctx switch: worker 0x80 now RUNNING
-[10.178834, 0, umcg] ctx switch complete - proceeding with server wait
-[958.500709969] !!!! Initial task 1 on Worker 128: WOKE UP FROM SLEEP !!!!
-[958.501580905] !!!! Initial task 1 on Worker 128: PREPARING to spawn child task !!!!
-[958.504581762] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 182884739 }
-[958.507026831] Adding task 922c48ab-f862-4569-86ff-72858264e817 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 185765691 }
-[958.509984095] !!!! Initial task 1 on Worker 128: COMPLETED !!!!
-[958.512719931] Completed task after 2.090781455s
-[958.514194150] Worker 1 signaling ready for work
-[10.193495, 4, umcg] sending event type 3 for worker 0x80 to server
-[958.515101219] Server 0: Context switch for unblocked worker 128 returned 0
-[958.516587336] Server 0: Switch events converted: [Some(Wait), None]
-[958.517298821] Server 0: Got event Some(Wait) from context switch in handle_event
-[958.517700521] Server 0: Processing event type 3 from worker 128 (raw event: 131). depth: 1, caller: handle_event
-[958.518170051] Server 0: Worker 128 current status: Running
-[958.518951168] Server 0: Got explicit WAIT from worker 128
-[958.520038997] Server 0: Processing explicit WAIT for worker 128 in state Running
-[958.521150232] Server 0: Transitioned worker 128 from Running to Waiting
-[958.522000543] Server 0: Added worker 128 to pending queue
-[958.523111680] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 128 depth 1!!!!
-[958.523832381] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 128 depth 0 !!!!
-[958.525137348] !!!! TRY_SCHEDULE: Found task 922c48ab-f862-4569-86ff-72858264e817 (dynamic_child_task) for worker 128 created 17.948432ms ago !!!!
-[958.525744629] Server 0: Updated worker 128 status to Running for task 922c48ab-f862-4569-86ff-72858264e817
-[958.526183584] Server 0: Sent task 922c48ab-f862-4569-86ff-72858264e817 to worker 128 after 19.253349ms in queue
-[958.526570461] Server 0: Context switching to worker 128 to start task 922c48ab-f862-4569-86ff-72858264e817
-[10.205804, 0, umcg] cmd 6
-[10.205980, 0, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
-[10.206321, 0, umcg] server->worker ctx switch: worker 0x80 now RUNNING
-[10.206632, 0, umcg] ctx switch complete - proceeding with server wait
-[958.527999234] Worker 1 executing task
-[958.528757872] Starting execution of task after 24.22375ms
-[958.529833852] !!!! Child task of initial task 1 on Worker 128: STARTING work !!!!
-[10.209628, 4, umcg] worker 0x80 blocked in syscall
-[958.531415494] Server 0: Context switch returned 0 for worker 128 running task 922c48ab-f862-4569-86ff-72858264e817
-[958.532025652] Server 0: Switch events converted: [Some(Block), None]
-[958.532571395] Server 0: Got event Some(Block) from context switch while running task 922c48ab-f862-4569-86ff-72858264e817
-[958.533141714] Server 0: Processing event type 1 from worker 128 (raw event: 129). depth: 0, caller: try_schedule_tasks
-[958.533653958] Server 0: Worker 128 current status: Running
-[958.533947017] Server 0: Worker 128 blocked while in running queue
-[958.534393969] Server 0: Processing BLOCK for worker 128 in state Running
-[958.534955121] Server 0: Updated worker 128 status from Running to Blocked
-[958.535683429] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 128, depth 0 !!!!
-[10.270692, 5, umcg] worker 0xe0 event 2
-[10.271038, 5, umcg] server getting event type 2 for worker 0xe0 (status: 0)
-[958.594416133] EventRoutingServer: Routing Wake event for worker 224 to server 1 (raw: 0xe2)
-[958.594993182] Successfully sent event to server 1
-[958.595055986] Server 1: Processing event type from ring buffer 2 for worker 224 (raw: 0xe2)
-[958.595810334] Server 1: Processing event type 2 from worker 224 (raw event: 226). depth: 0, caller: run_event_loop
-[958.596469352] Server 1: Worker 224 current status: Blocked
-[958.597116958] Server 1: Processing WAKE for worker 224 in state Blocked
-[958.597625740] Server 1: Worker 224 woke up from blocked state, resuming task
-[958.598284270] Server 1: Updated worker 224 status from Blocked to Running
-[958.598674121] Server 1: Context switching to unblocked worker 224 to resume task
-[10.278120, 0, umcg] cmd 6
-[10.278350, 0, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
-[10.278770, 0, umcg] server->worker ctx switch: worker 0xe0 now RUNNING
-[10.279026, 0, umcg] ctx switch complete - proceeding with server wait
-[958.600648930] !!!! Initial task 3 on Worker 224: WOKE UP FROM SLEEP !!!!
-[958.601300974] !!!! Initial task 3 on Worker 224: PREPARING to spawn child task !!!!
-[958.602391876] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 281051253 }
-[958.603624967] Adding task ff68dddf-8148-4968-9680-cbe3acfdfcd1 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 282337105 }
-[958.605077244] !!!! Initial task 3 on Worker 224: COMPLETED !!!!
-[958.606634163] Completed task after 2.16393959s
-[958.607472185] Worker 1 signaling ready for work
-[10.286659, 5, umcg] sending event type 3 for worker 0xe0 to server
-[958.608021877] Server 1: Context switch for unblocked worker 224 returned 0
-[958.608631792] Server 1: Switch events converted: [Some(Wait), None]
-[958.608907930] Server 1: Got event Some(Wait) from context switch in handle_event
-[958.609258480] Server 1: Processing event type 3 from worker 224 (raw event: 227). depth: 1, caller: handle_event
-[958.609792911] Server 1: Worker 224 current status: Running
-[958.610518196] Server 1: Got explicit WAIT from worker 224
-[958.611297168] Server 1: Processing explicit WAIT for worker 224 in state Running
-[958.611845690] Server 1: Transitioned worker 224 from Running to Waiting
-[958.612398211] Server 1: Added worker 224 to pending queue
-[958.613017927] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 224 depth 1!!!!
-[958.613521442] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 224 depth 0 !!!!
-[958.614325429] !!!! TRY_SCHEDULE: Found task ff68dddf-8148-4968-9680-cbe3acfdfcd1 (dynamic_child_task) for worker 224 created 10.692367ms ago !!!!
-[958.614902574] Server 1: Updated worker 224 status to Running for task ff68dddf-8148-4968-9680-cbe3acfdfcd1
-[958.615701490] Server 1: Sent task ff68dddf-8148-4968-9680-cbe3acfdfcd1 to worker 224 after 12.201548ms in queue
-[958.616076078] Server 1: Context switching to worker 224 to start task ff68dddf-8148-4968-9680-cbe3acfdfcd1
-[10.295319, 0, umcg] cmd 6
-[10.295491, 0, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
-[10.295820, 0, umcg] server->worker ctx switch: worker 0xe0 now RUNNING
-[10.296155, 0, umcg] ctx switch complete - proceeding with server wait
-[958.617565951] Worker 1 executing task
-[958.618339217] Starting execution of task after 15.7698ms
-[958.618899881] !!!! Child task of initial task 3 on Worker 224: STARTING work !!!!
-[10.298211, 5, umcg] worker 0xe0 blocked in syscall
-[958.619591374] Server 1: Context switch returned 0 for worker 224 running task ff68dddf-8148-4968-9680-cbe3acfdfcd1
-[958.620363373] Server 1: Switch events converted: [Some(Block), None]
-[958.620645460] Server 1: Got event Some(Block) from context switch while running task ff68dddf-8148-4968-9680-cbe3acfdfcd1
-[958.621227337] Server 1: Processing event type 1 from worker 224 (raw event: 225). depth: 0, caller: try_schedule_tasks
-[958.621587248] Server 1: Worker 224 current status: Running
-[958.621865191] Server 1: Worker 224 blocked while in running queue
-[958.622235586] Server 1: Processing BLOCK for worker 224 in state Running
-[958.622788254] Server 1: Updated worker 224 status from Running to Blocked
-[958.623144411] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 224, depth 0 !!!!
-[10.317814, 5, umcg] worker 0xc0 event 2
-[10.318085, 5, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[10.318802, 5, umcg] worker 0x60 event 2
-[10.319244, 5, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[958.641647023] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[958.642096509] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[958.642182331] Successfully sent event to server 1
-[958.642585738] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[958.643349739] Server 1: Worker 192 current status: Blocked
-[958.643740713] Server 1: Processing WAKE for worker 192 in state Blocked
-[958.644188737] Server 1: Worker 192 woke up from blocked state, resuming task
-[958.643080526] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
-[958.644629545] Server 1: Updated worker 192 status from Blocked to Running
-[958.645676805] Server 1: Context switching to unblocked worker 192 to resume task
-[10.324874, 0, umcg] cmd 6
-[10.324990, 0, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[958.645749217] Successfully sent event to server 0
-[10.325514, 0, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[10.326422, 0, umcg] ctx switch complete - proceeding with server wait
-[10.326790, 5, umcg] worker 0xc0 blocked in syscall
-[958.645785008] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
-[958.649295866] Server 1: Context switch for unblocked worker 192 returned 0
-[10.328368, 4, umcg] worker 0xc0 event 2
-[10.328866, 4, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[958.650572843] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
-[958.651003216] Server 0: Worker 96 current status: Blocked
-[958.651192119] Server 0: Processing WAKE for worker 96 in state Blocked
-[958.651570609] Server 0: Worker 96 woke up from blocked state, resuming task
-[958.651893462] Server 0: Updated worker 96 status from Blocked to Running
-[958.652283021] Server 0: Context switching to unblocked worker 96 to resume task
-[10.331617, 4, umcg] cmd 6
-[958.651328067] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[10.331732, 4, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[10.332745, 4, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[10.333183, 4, umcg] ctx switch complete - proceeding with server wait
-[958.655053283] Successfully sent event to server 1
-[958.655306308] !!!! Initial task 2 on Worker 96: WOKE UP FROM SLEEP !!!!
-[958.655571866] !!!! Initial task 2 on Worker 96: PREPARING to spawn child task !!!!
-[958.656054364] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 334881776 }
-[958.656555247] Adding task 00e9e07e-fd77-4363-add8-2140e8df10ab of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 335271823 }
-[958.656985279] !!!! Initial task 2 on Worker 96: COMPLETED !!!!
-[958.657056959] Server 1: Switch events converted: [Some(Block), None]
-[958.657746842] Server 1: Got event Some(Block) from context switch in handle_event
-[958.657939501] Completed task after 2.220049636s
-[958.657965051] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 1, caller: handle_event
-[10.337703, 1, umcg] worker 0x60 blocked in syscall
-[10.338283, 7, umcg] worker 0x60 event 2
-[10.338417, 7, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[958.659570148] Server 0: Context switch for unblocked worker 96 returned 0
-[958.660181720] Server 0: Switch events converted: [Some(Block), None]
-[958.660593563] Server 0: Got event Some(Block) from context switch in handle_event
-[958.660374817] Server 1: Worker 192 current status: Running
-[958.661339425] Server 1: Worker 192 blocked while in running queue
-[958.660880380] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 1, caller: handle_event
-[958.661374631] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
-[958.661948315] Server 1: Processing BLOCK for worker 192 in state Running
-[958.663154149] Server 1: Updated worker 192 status from Running to Blocked
-[958.663597638] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 1 !!!!
-[958.663227145] Successfully sent event to server 0
-[958.663938923] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[958.662434716] Server 0: Worker 96 current status: Running
-[958.664791427] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[958.665203417] Server 0: Worker 96 blocked while in running queue
-[958.665591464] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[958.666417150] Server 1: Worker 192 current status: Blocked
-[958.666044316] Server 0: Processing BLOCK for worker 96 in state Running
-[958.666988931] Server 1: Processing WAKE for worker 192 in state Blocked
-[958.667311638] Server 0: Updated worker 96 status from Running to Blocked
-[958.668120305] Server 1: Worker 192 woke up from blocked state, resuming task
-[958.669244853] Server 1: Updated worker 192 status from Blocked to Running
-[958.669680541] Server 1: Context switching to unblocked worker 192 to resume task
-[10.349177, 0, umcg] cmd 6
-[958.669949804] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 1 !!!!
-[10.349229, 0, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[958.670926847] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
-[10.350412, 0, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[10.351512, 0, umcg] ctx switch complete - proceeding with server wait
-[10.351993, 5, umcg] worker 0xc0 blocked in syscall
-[10.352575, 7, umcg] worker 0xc0 event 2
-[10.352665, 7, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[958.674243632] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[958.673524150] Server 1: Context switch for unblocked worker 192 returned 0
-[958.674274353] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
-[958.674950875] Successfully sent event to server 1
-[958.674969307] Server 1: Switch events converted: [Some(Block), None]
-[958.675403532] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
-[958.676617704] Server 0: Worker 96 current status: Blocked
-[958.676098584] Server 1: Got event Some(Block) from context switch in handle_event
-[958.677542035] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 1, caller: handle_event
-[958.677247073] Server 0: Processing WAKE for worker 96 in state Blocked
-[958.678519516] Server 0: Worker 96 woke up from blocked state, resuming task
-[958.678153704] Server 1: Worker 192 current status: Running
-[958.678759571] Server 0: Updated worker 96 status from Blocked to Running
-[958.679719644] Server 0: Context switching to unblocked worker 96 to resume task
-[10.359364, 0, umcg] cmd 6
-[10.359441, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[958.679332328] Server 1: Worker 192 blocked while in running queue
-[10.359850, 0, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[10.360644, 0, umcg] ctx switch complete - proceeding with server wait
-[958.681500039] Server 1: Processing BLOCK for worker 192 in state Running
-[10.361338, 0, umcg] worker 0x60 blocked in syscall
-[958.682889364] Server 0: Context switch for unblocked worker 96 returned 0
-[10.361882, 5, umcg] worker 0x60 event 2
-[10.362134, 5, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[958.683279947] Server 0: Switch events converted: [Some(Block), None]
-[958.684580817] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
-[958.684634260] Server 0: Got event Some(Block) from context switch in handle_event
-[958.685119197] Successfully sent event to server 0
-[958.684381429] Server 1: Updated worker 192 status from Running to Blocked
-[958.686301967] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 1 !!!!
-[958.685850723] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 1, caller: handle_event
-[958.686818453] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[958.687241657] Server 0: Worker 96 current status: Running
-[958.687672273] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[958.688080655] Server 0: Worker 96 blocked while in running queue
-[958.688600798] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[958.689080566] Server 0: Processing BLOCK for worker 96 in state Running
-[958.689956282] Server 0: Updated worker 96 status from Running to Blocked
-[958.689541269] Server 1: Worker 192 current status: Blocked
-[958.690684834] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 1 !!!!
-[958.691050353] Server 1: Processing WAKE for worker 192 in state Blocked
-[958.691452834] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
-[958.691816987] Server 1: Worker 192 woke up from blocked state, resuming task
-[958.692309093] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
-[958.692779061] Server 1: Updated worker 192 status from Blocked to Running
-[958.693317343] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
-[958.693852115] Server 1: Context switching to unblocked worker 192 to resume task
-[10.373862, 7, umcg] cmd 6
-[958.694557358] Server 0: Worker 96 current status: Blocked
-[10.373993, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[958.695867347] Server 0: Processing WAKE for worker 96 in state Blocked
-[10.374768, 7, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[958.696409239] Server 0: Worker 96 woke up from blocked state, resuming task
-[10.376083, 7, umcg] ctx switch complete - proceeding with server wait
-[958.697803196] Server 0: Updated worker 96 status from Blocked to Running
-[10.376995, 5, umcg] worker 0xc0 blocked in syscall
-[10.378320, 0, umcg] worker 0xc0 event 2
-[10.378452, 0, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[958.700141232] Server 0: Context switching to unblocked worker 96 to resume task
-[10.379495, 0, umcg] cmd 6
-[10.379545, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[958.700971160] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[10.380092, 0, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[10.381532, 0, umcg] ctx switch complete - proceeding with server wait
-[958.701244958] Server 1: Context switch for unblocked worker 192 returned 0
-[10.382043, 0, umcg] worker 0x60 blocked in syscall
-[958.703603914] Server 0: Context switch for unblocked worker 96 returned 0
-[958.703815783] Server 1: Switch events converted: [Some(Block), None]
-[958.703909699] Server 0: Switch events converted: [Some(Block), None]
-[958.704786682] Server 0: Got event Some(Block) from context switch in handle_event
-[958.705135622] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 1, caller: handle_event
-[958.705390648] Server 0: Worker 96 current status: Running
-[958.705917617] Server 0: Worker 96 blocked while in running queue
-[958.706371640] Server 0: Processing BLOCK for worker 96 in state Running
-[958.706896806] Server 0: Updated worker 96 status from Running to Blocked
-[958.707444987] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 1 !!!!
-[958.708529988] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
-[958.707865461] Server 1: Got event Some(Block) from context switch in handle_event
-[958.707409245] Successfully sent event to server 1
-[958.709392002] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 1, caller: handle_event
-[10.388771, 1, umcg] worker 0x60 event 2
-[10.389356, 1, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[958.710551072] Server 1: Worker 192 current status: Running
-[958.711241833] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
-[958.711457118] Server 1: Worker 192 blocked while in running queue
-[958.712190204] Server 1: Processing BLOCK for worker 192 in state Running
-[958.715720371] Successfully sent event to server 0
-[958.715893038] Server 1: Updated worker 192 status from Running to Blocked
-[958.716037714] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
-[958.716454336] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 1 !!!!
-[958.716925133] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
-[958.717637642] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[958.718238145] Server 0: Worker 96 current status: Blocked
-[958.718741124] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[958.719014386] Server 0: Processing WAKE for worker 96 in state Blocked
-[958.719341139] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[958.719640683] Server 0: Worker 96 woke up from blocked state, resuming task
-[958.720211003] Server 0: Updated worker 96 status from Blocked to Running
-[958.720427847] Server 0: Context switching to unblocked worker 96 to resume task
-[10.399610, 0, umcg] cmd 6
-[10.399869, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[10.400072, 0, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[10.400331, 0, umcg] ctx switch complete - proceeding with server wait
-[958.658399032] Worker 0 signaling ready for work
-[10.401231, 0, umcg] sending event type 3 for worker 0x60 to server
-[958.722546748] Server 0: Context switch for unblocked worker 96 returned 0
-[958.722532070] Server 1: Worker 192 current status: Blocked
-[958.722896810] Server 0: Switch events converted: [Some(Wait), None]
-[958.723433190] Server 1: Processing WAKE for worker 192 in state Blocked
-[958.724058854] Server 1: Worker 192 woke up from blocked state, resuming task
-[958.723736294] Server 0: Got event Some(Wait) from context switch in handle_event
-[958.724998984] Server 0: Processing event type 3 from worker 96 (raw event: 99). depth: 1, caller: handle_event
-[958.725235528] Server 0: Worker 96 current status: Running
-[958.725304575] Server 1: Updated worker 192 status from Blocked to Running
-[958.725504255] Server 0: Got explicit WAIT from worker 96
-[958.725813503] Server 1: Context switching to unblocked worker 192 to resume task
-[958.726145182] Server 0: Processing explicit WAIT for worker 96 in state Running
-[10.405351, 7, umcg] cmd 6
-[10.405992, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[10.406470, 7, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[958.727762761] Server 0: Transitioned worker 96 from Running to Waiting
-[10.407033, 7, umcg] ctx switch complete - proceeding with server wait
-[958.647881575] !!!! Initial task 0 on Worker 192: WOKE UP FROM SLEEP !!!!
-[958.728758430] Server 0: Added worker 96 to pending queue
-[10.408209, 5, umcg] worker 0xc0 blocked in syscall
-[10.408621, 0, umcg] worker 0xc0 event 2
-[10.408730, 0, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[958.730344656] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 96 depth 1!!!!
-[958.731090713] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
-[958.730645712] Server 1: Context switch for unblocked worker 192 returned 0
-[958.731884606] !!!! TRY_SCHEDULE: Found task 00e9e07e-fd77-4363-add8-2140e8df10ab (dynamic_child_task) for worker 96 created 75.241928ms ago !!!!
-[958.730388151] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[958.731975205] Server 1: Switch events converted: [Some(Block), None]
-[958.732521631] Server 0: Updated worker 96 status to Running for task 00e9e07e-fd77-4363-add8-2140e8df10ab
-[958.733165484] Successfully sent event to server 1
-[958.733802656] Server 1: Got event Some(Block) from context switch in handle_event
-[958.734406718] Server 0: Sent task 00e9e07e-fd77-4363-add8-2140e8df10ab to worker 96 after 77.964598ms in queue
-[958.735135465] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 1, caller: handle_event
-[958.735526390] Server 0: Context switching to worker 96 to start task 00e9e07e-fd77-4363-add8-2140e8df10ab
-[10.415495, 0, umcg] cmd 6
-[10.415589, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[958.736143325] Server 1: Worker 192 current status: Running
-[10.415941, 0, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[10.416317, 0, umcg] ctx switch complete - proceeding with server wait
-[958.737833852] Worker 0 executing task
-[958.737963608] Starting execution of task after 81.922164ms
-[958.738435136] !!!! Child task of initial task 2 on Worker 96: STARTING work !!!!
-[10.417759, 0, umcg] worker 0x60 blocked in syscall
-[958.739250240] Server 0: Context switch returned 0 for worker 96 running task 00e9e07e-fd77-4363-add8-2140e8df10ab
-[958.739724400] Server 0: Switch events converted: [Some(Block), None]
-[958.739882388] Server 0: Got event Some(Block) from context switch while running task 00e9e07e-fd77-4363-add8-2140e8df10ab
-[958.740249664] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 0, caller: try_schedule_tasks
-[958.740552768] Server 1: Worker 192 blocked while in running queue
-[958.740607430] Server 0: Worker 96 current status: Running
-[958.741482511] Server 0: Worker 96 blocked while in running queue
-[958.741167265] Server 1: Processing BLOCK for worker 192 in state Running
-[958.742427371] Server 1: Updated worker 192 status from Running to Blocked
-[958.741752750] Server 0: Processing BLOCK for worker 96 in state Running
-[958.743454101] Server 0: Updated worker 96 status from Running to Blocked
-[958.743046988] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 1 !!!!
-[958.744720839] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[958.744177045] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 0 !!!!
-[958.745403944] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[958.746403467] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[958.746972079] Server 1: Worker 192 current status: Blocked
-[958.748585757] Server 1: Processing WAKE for worker 192 in state Blocked
-[958.749349759] Server 1: Worker 192 woke up from blocked state, resuming task
-[958.749887066] Server 1: Updated worker 192 status from Blocked to Running
-[958.750738645] Server 1: Context switching to unblocked worker 192 to resume task
-[10.430390, 7, umcg] cmd 6
-[10.430550, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[10.430725, 7, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[10.431113, 7, umcg] ctx switch complete - proceeding with server wait
-[958.729314998] !!!! Initial task 0 on Worker 192: PREPARING to spawn child task !!!!
-[958.753359451] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 432184230 }
-[958.753939377] Adding task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 432751866 }
-[958.754592543] !!!! Initial task 0 on Worker 192: COMPLETED !!!!
-[958.754955185] Completed task after 2.464373363s
-[958.755179685] Worker 0 signaling ready for work
-[10.434406, 5, umcg] sending event type 3 for worker 0xc0 to server
-[958.755878833] Server 1: Context switch for unblocked worker 192 returned 0
-[958.757462523] Server 1: Switch events converted: [Some(Wait), None]
-[958.758254075] Server 1: Got event Some(Wait) from context switch in handle_event
-[958.759444646] Server 1: Processing event type 3 from worker 192 (raw event: 195). depth: 1, caller: handle_event
-[958.759883746] Server 1: Worker 192 current status: Running
-[958.760806908] Server 1: Got explicit WAIT from worker 192
-[958.761976413] Server 1: Processing explicit WAIT for worker 192 in state Running
-[958.763199265] Server 1: Transitioned worker 192 from Running to Waiting
-[958.764288459] Server 1: Added worker 192 to pending queue
-[958.765621318] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 192 depth 1!!!!
-[958.766798869] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[958.767724662] !!!! TRY_SCHEDULE: Found task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410 (dynamic_child_task) for worker 192 created 13.785872ms ago !!!!
-[958.771234984] Server 1: Updated worker 192 status to Running for task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410
-[958.773248511] Server 1: Sent task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410 to worker 192 after 19.309426ms in queue
-[958.774051912] Server 1: Context switching to worker 192 to start task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410
-[10.453642, 7, umcg] cmd 6
-[10.453758, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[10.453957, 7, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[10.454319, 7, umcg] ctx switch complete - proceeding with server wait
-[958.775994684] Worker 0 executing task
-[958.776248294] Starting execution of task after 22.899229ms
-[958.776748787] !!!! Child task of initial task 0 on Worker 192: STARTING work !!!!
-[10.456256, 5, umcg] worker 0xc0 blocked in syscall
-[958.777818233] Server 1: Context switch returned 0 for worker 192 running task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410
-[958.780251696] Server 1: Switch events converted: [Some(Block), None]
-[958.781535256] Server 1: Got event Some(Block) from context switch while running task 0f9c6cfc-d0e1-46fd-be1e-16cdc6cde410
-[958.782180669] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 0, caller: try_schedule_tasks
-[958.782611578] Server 1: Worker 192 current status: Running
-[958.783065941] Server 1: Worker 192 blocked while in running queue
-[958.784121053] Server 1: Processing BLOCK for worker 192 in state Running
-[958.784911873] Server 1: Updated worker 192 status from Running to Blocked
-[958.785578984] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 0 !!!!
-[958.829567061] Server 1 event loop check in
-[958.839223870] Server 0 event loop check in
-[959.329993832] Server 1 event loop check in
-[959.339534491] Server 0 event loop check in
-[11.210263, 0, umcg] worker 0x80 event 2
-[11.210356, 0, umcg] server getting event type 2 for worker 0x80 (status: 0)
-[959.532011720] EventRoutingServer: Routing Wake event for worker 128 to server 0 (raw: 0x82)
-[959.532579845] Successfully sent event to server 0
-[959.533118762] Server 0: Processing event type from ring buffer 2 for worker 128 (raw: 0x82)
-[959.533310202] EventRoutingServer loop checkin
-[959.533610819] Server 0: Processing event type 2 from worker 128 (raw event: 130). depth: 0, caller: run_event_loop
-[959.534869169] Server 0: Worker 128 current status: Blocked
-[959.535286766] Server 0: Processing WAKE for worker 128 in state Blocked
-[959.535612008] Server 0: Worker 128 woke up from blocked state, resuming task
-[959.536174574] Server 0: Updated worker 128 status from Blocked to Running
-[959.536633569] Server 0: Context switching to unblocked worker 128 to resume task
-[11.215841, 0, umcg] cmd 6
-[11.216006, 0, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
-[11.216385, 0, umcg] server->worker ctx switch: worker 0x80 now RUNNING
-[11.216746, 0, umcg] ctx switch complete - proceeding with server wait
-[959.538879836] !!!! Child task of initial task 1 on Worker 128: COMPLETED !!!!
-[959.540297638] Completed task after 1.035935206s
-[959.540884244] Worker 1 signaling ready for work
-[11.219965, 4, umcg] sending event type 3 for worker 0x80 to server
-[959.541411068] Server 0: Context switch for unblocked worker 128 returned 0
-[959.542018007] Server 0: Switch events converted: [Some(Wait), None]
-[959.542275275] Server 0: Got event Some(Wait) from context switch in handle_event
-[959.542889529] Server 0: Processing event type 3 from worker 128 (raw event: 131). depth: 1, caller: handle_event
-[959.543407673] Server 0: Worker 128 current status: Running
-[959.543671280] Server 0: Got explicit WAIT from worker 128
-[959.543943322] Server 0: Processing explicit WAIT for worker 128 in state Running
-[959.544237941] Server 0: Transitioned worker 128 from Running to Waiting
-[959.544454201] Server 0: Added worker 128 to pending queue
-[959.544814942] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 128 depth 1!!!!
-[959.545183874] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 128 depth 0 !!!!
-[11.301579, 7, umcg] worker 0xe0 event 2
-[11.301828, 7, umcg] server getting event type 2 for worker 0xe0 (status: 0)
-[959.623505996] EventRoutingServer: Routing Wake event for worker 224 to server 1 (raw: 0xe2)
-[959.624095332] Server 1: Processing event type from ring buffer 2 for worker 224 (raw: 0xe2)
-[959.624148872] Successfully sent event to server 1
-[959.624914338] Server 1: Processing event type 2 from worker 224 (raw event: 226). depth: 0, caller: run_event_loop
-[959.625823357] Server 1: Worker 224 current status: Blocked
-[959.626655430] Server 1: Processing WAKE for worker 224 in state Blocked
-[959.627249058] Server 1: Worker 224 woke up from blocked state, resuming task
-[959.627606385] Server 1: Updated worker 224 status from Blocked to Running
-[959.628153104] Server 1: Context switching to unblocked worker 224 to resume task
-[11.307462, 7, umcg] cmd 6
-[11.307561, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
-[11.307878, 7, umcg] server->worker ctx switch: worker 0xe0 now RUNNING
-[11.308123, 7, umcg] ctx switch complete - proceeding with server wait
-[959.629652533] !!!! Child task of initial task 3 on Worker 224: COMPLETED !!!!
-[959.630432675] Completed task after 1.028078784s
-[959.630834473] Worker 1 signaling ready for work
-[11.310066, 5, umcg] sending event type 3 for worker 0xe0 to server
-[959.631683905] Server 1: Context switch for unblocked worker 224 returned 0
-[959.632297964] Server 1: Switch events converted: [Some(Wait), None]
-[959.632615941] Server 1: Got event Some(Wait) from context switch in handle_event
-[959.633078593] Server 1: Processing event type 3 from worker 224 (raw event: 227). depth: 1, caller: handle_event
-[959.633744535] Server 1: Worker 224 current status: Running
-[959.633888724] Server 1: Got explicit WAIT from worker 224
-[959.634691346] Server 1: Processing explicit WAIT for worker 224 in state Running
-[959.635281901] Server 1: Transitioned worker 224 from Running to Waiting
-[959.635907760] Server 1: Added worker 224 to pending queue
-[959.636153764] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 224 depth 1!!!!
-[959.637038793] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 224 depth 0 !!!!
-[11.419309, 4, umcg] worker 0x60 event 2
-[11.419533, 4, umcg] server getting event type 2 for worker 0x60 (status: 0)
-[959.741016948] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
-[959.741378029] Successfully sent event to server 0
-[959.741392560] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
-[959.741991942] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
-[959.742322011] Server 0: Worker 96 current status: Blocked
-[959.742562846] Server 0: Processing WAKE for worker 96 in state Blocked
-[959.743063729] Server 0: Worker 96 woke up from blocked state, resuming task
-[959.743487080] Server 0: Updated worker 96 status from Blocked to Running
-[959.743680908] Server 0: Context switching to unblocked worker 96 to resume task
-[11.423162, 0, umcg] cmd 6
-[11.423220, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
-[11.423552, 0, umcg] server->worker ctx switch: worker 0x60 now RUNNING
-[11.423855, 0, umcg] ctx switch complete - proceeding with server wait
-[959.745214325] !!!! Child task of initial task 2 on Worker 96: COMPLETED !!!!
-[959.745514064] Completed task after 1.089471353s
-[959.745806197] Worker 0 signaling ready for work
-[11.425027, 0, umcg] sending event type 3 for worker 0x60 to server
-[959.747287779] Server 0: Context switch for unblocked worker 96 returned 0
-[959.747712593] Server 0: Switch events converted: [Some(Wait), None]
-[959.747976248] Server 0: Got event Some(Wait) from context switch in handle_event
-[959.748275646] Server 0: Processing event type 3 from worker 96 (raw event: 99). depth: 1, caller: handle_event
-[959.749070758] Server 0: Worker 96 current status: Running
-[959.749193882] Server 0: Got explicit WAIT from worker 96
-[959.749412969] Server 0: Processing explicit WAIT for worker 96 in state Running
-[959.749804673] Server 0: Transitioned worker 96 from Running to Waiting
-[959.750125137] Server 0: Added worker 96 to pending queue
-[959.750347540] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 96 depth 1!!!!
-[959.750968815] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
-[11.458984, 7, umcg] worker 0xc0 event 2
-[11.459199, 7, umcg] server getting event type 2 for worker 0xc0 (status: 0)
-[959.780795797] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
-[959.781554240] Successfully sent event to server 1
-[959.781592469] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
-[959.782461260] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
-[959.783218581] Server 1: Worker 192 current status: Blocked
-[959.783584881] Server 1: Processing WAKE for worker 192 in state Blocked
-[959.783868968] Server 1: Worker 192 woke up from blocked state, resuming task
-[959.784232391] Server 1: Updated worker 192 status from Blocked to Running
-[959.784565581] Server 1: Context switching to unblocked worker 192 to resume task
-[11.463725, 7, umcg] cmd 6
-[11.464055, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
-[11.464261, 7, umcg] server->worker ctx switch: worker 0xc0 now RUNNING
-[11.464547, 7, umcg] ctx switch complete - proceeding with server wait
-[959.786095876] !!!! Child task of initial task 0 on Worker 192: COMPLETED !!!!
-[959.786633964] Completed task after 1.03327378s
-[959.788857458] Worker 0 signaling ready for work
-[11.468119, 5, umcg] sending event type 3 for worker 0xc0 to server
-[959.789525350] Server 1: Context switch for unblocked worker 192 returned 0
-[959.790130242] Server 1: Switch events converted: [Some(Wait), None]
-[959.790461335] Server 1: Got event Some(Wait) from context switch in handle_event
-[959.790761075] Server 1: Processing event type 3 from worker 192 (raw event: 195). depth: 1, caller: handle_event
-[959.791230994] Server 1: Worker 192 current status: Running
-[959.791552334] Server 1: Got explicit WAIT from worker 192
-[959.792046537] Server 1: Processing explicit WAIT for worker 192 in state Running
-[959.792440971] Server 1: Transitioned worker 192 from Running to Waiting
-[959.792821948] Server 1: Added worker 192 to pending queue
-[959.793855214] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 192 depth 1!!!!
-[959.795675301] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
-[959.799955378] All tasks completed successfully (8/8)
+[391.305794511] Server 0: Starting event loop
+[391.306012948] Server 1: Starting event loop
+[391.361772728] Adding task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3 of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 5976757 }
+[391.383813975] Creating task of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 50337642 }
+[391.395834585] Adding task 42d8788b-47a3-45d4-848d-8e34bbc78b5a of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 63443782 }
+[391.401158198] Creating task of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 71814135 }
+[391.402106388] !!!! TRY_SCHEDULE: Found task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3 (dynamic_parent_task) for worker 192 created 40.924432ms ago !!!!
+[391.414075829] Adding task 8aab9435-f02d-4145-a51b-5d5cf48d6da1 of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 73544020 }
+[391.416756414] Creating task of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 86464450 }
+[391.417558190] !!!! TRY_SCHEDULE: Found task 42d8788b-47a3-45d4-848d-8e34bbc78b5a (dynamic_parent_task) for worker 96 created 9.97603ms ago !!!!
+[391.417974212] Adding task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569 of type dynamic_parent_task at Instant { tv_sec: 8, tv_nsec: 88415139 }
+[391.418573578] Server 1: Updated worker 192 status to Running for task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3
+[391.421382860] Server 0: Updated worker 96 status to Running for task 42d8788b-47a3-45d4-848d-8e34bbc78b5a
+[391.421759153] All tasks submitted, waiting for completion...
+[391.436204788] Progress: 0/4 tasks completed
+[391.442528920] Server 0: Sent task 42d8788b-47a3-45d4-848d-8e34bbc78b5a to worker 96 after 47.669171ms in queue
+[391.442550353] Server 1: Sent task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3 to worker 192 after 104.986307ms in queue
+[391.443522729] Server 0: Context switching to worker 96 to start task 42d8788b-47a3-45d4-848d-8e34bbc78b5a
+[391.445756155] Server 1: Context switching to worker 192 to start task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3
+[8.116674, 3, umcg] cmd 6
+[8.117139, 3, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
+[8.117853, 3, umcg] server->worker ctx switch: worker 96 now RUNNING
+[8.118028, 3, umcg] ctx switch complete - proceeding with server wait
+[8.118242, 7, umcg] cmd 6
+[8.118444, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
+[8.118717, 7, umcg] server->worker ctx switch: worker 192 now RUNNING
+[8.118894, 7, umcg] ctx switch complete - proceeding with server wait
+[391.452112727] Worker 0 executing task
+[391.452285788] Worker 0 executing task
+[391.454506809] Starting execution of task after 73.646551ms
+[391.454527808] Starting execution of task after 164.469575ms
+[391.456025013] !!!! Initial task 1: STARTING task on Worker 96 !!!!
+[391.456857781] !!!! Initial task 1 on Worker 96: ABOUT TO SLEEP !!!!
+[391.456882352] !!!! Initial task 0: STARTING task on Worker 192 !!!!
+[8.128534, 0, umcg] worker 96 blocked in syscall
+[391.459253117] Server 0: Context switch returned 0 for worker 96 running task 42d8788b-47a3-45d4-848d-8e34bbc78b5a
+[8.130511, 7, umcg] worker 192 blocked in syscall
+[8.134281, 7, umcg] worker 192 event 2
+[8.134364, 7, umcg] server getting event type 2 for worker 192 (status: 0)
+[391.465907924] Server 1: Context switch returned 0 for worker 192 running task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3
+[391.470720030] Server 0: Switch events converted: [Some(Block), None]
+[391.482252932] Server 0: Got event Some(Block) from context switch while running task 42d8788b-47a3-45d4-848d-8e34bbc78b5a
+[391.485975985] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 0, caller: try_schedule_tasks
+[391.490353339] Server 1: Switch events converted: [Some(Block), None]
+[391.491298875] Server 0: Worker 96 current status: Running
+[391.493714390] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
+[391.494503759] Server 0: Worker 96 blocked while in running queue
+[391.500379140] Server 0: Processing BLOCK for worker 96 in state Running
+[391.500934962] Server 1: Got event Some(Block) from context switch while running task 46acfbd2-715d-4ce6-a7b2-8f6492fbbac3
+[391.503633650] Server 0: Updated worker 96 status from Running to Blocked
+[391.505025668] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 0, caller: try_schedule_tasks
+[391.508235959] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 0 !!!!
+[391.508537380] Server 1: Worker 192 current status: Running
+[391.512183533] Server 1: Worker 192 blocked while in running queue
+[391.516638897] Server 1: Processing BLOCK for worker 192 in state Running
+[391.518521857] Successfully sent event to server 1
+[391.520466656] Server 1: Updated worker 192 status from Running to Blocked
+[391.521606734] !!!! TRY_SCHEDULE: Found task 8aab9435-f02d-4145-a51b-5d5cf48d6da1 (dynamic_parent_task) for worker 128 created 118.250397ms ago !!!!
+[391.523466234] Server 0: Updated worker 128 status to Running for task 8aab9435-f02d-4145-a51b-5d5cf48d6da1
+[391.524557748] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 0 !!!!
+[391.527515375] !!!! TRY_SCHEDULE: Found task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569 (dynamic_parent_task) for worker 224 created 109.818495ms ago !!!!
+[391.527559932] Server 0: Sent task 8aab9435-f02d-4145-a51b-5d5cf48d6da1 to worker 128 after 124.664366ms in queue
+[391.528357895] Server 1: Updated worker 224 status to Running for task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569
+[391.528824555] Server 0: Context switching to worker 128 to start task 8aab9435-f02d-4145-a51b-5d5cf48d6da1
+[8.200731, 1, umcg] cmd 6
+[391.529959081] Server 1: Sent task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569 to worker 224 after 112.156337ms in queue
+[8.200927, 1, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
+[8.201761, 1, umcg] server->worker ctx switch: worker 128 now RUNNING
+[8.202478, 1, umcg] ctx switch complete - proceeding with server wait
+[391.531648271] Server 1: Context switching to worker 224 to start task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569
+[8.203485, 7, umcg] cmd 6
+[8.203529, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
+[8.203705, 7, umcg] server->worker ctx switch: worker 224 now RUNNING
+[8.203782, 7, umcg] ctx switch complete - proceeding with server wait
+[391.533059309] Worker 1 executing task
+[391.534260839] Starting execution of task after 133.001507ms
+[391.534677344] !!!! Initial task 2: STARTING task on Worker 128 !!!!
+[8.205834, 7, umcg] worker 224 blocked in syscall
+[391.535626982] Server 1: Context switch returned 0 for worker 224 running task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569
+[8.207037, 0, umcg] worker 224 event 2
+[8.207162, 0, umcg] server getting event type 2 for worker 224 (status: 0)
+[391.537336496] !!!! Initial task 2 on Worker 128: ABOUT TO SLEEP !!!!
+[8.208739, 0, umcg] worker 128 blocked in syscall
+[391.540005254] Server 0: Context switch returned 0 for worker 128 running task 8aab9435-f02d-4145-a51b-5d5cf48d6da1
+[391.545783605] Progress: 0/4 tasks completed
+[391.548951366] Server 1: Switch events converted: [Some(Block), None]
+[391.548992736] Server 0: Switch events converted: [Some(Block), None]
+[391.550598944] Server 1: Got event Some(Block) from context switch while running task 7a6493b1-d5f6-481b-b4cc-ca22ff11c569
+[391.551353413] Server 0: Got event Some(Block) from context switch while running task 8aab9435-f02d-4145-a51b-5d5cf48d6da1
+[391.552196415] Server 0: Processing event type 1 from worker 128 (raw event: 129). depth: 0, caller: try_schedule_tasks
+[391.552227117] EventRoutingServer: Routing Wake event for worker 224 to server 1 (raw: 0xe2)
+[391.555434609] Server 0: Worker 128 current status: Running
+[391.552485284] Server 1: Processing event type 1 from worker 224 (raw event: 225). depth: 0, caller: try_schedule_tasks
+[391.556480939] Server 0: Worker 128 blocked while in running queue
+[391.557122640] Server 1: Worker 224 current status: Running
+[391.557645829] Server 1: Worker 224 blocked while in running queue
+[391.558369788] Server 0: Processing BLOCK for worker 128 in state Running
+[391.558857593] Server 1: Processing BLOCK for worker 224 in state Running
+[391.559952873] Server 0: Updated worker 128 status from Running to Blocked
+[391.560341524] Server 1: Updated worker 224 status from Running to Blocked
+[391.560909173] Successfully sent event to server 1
+[391.561528814] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 128, depth 0 !!!!
+[391.561816089] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 224, depth 0 !!!!
+[391.565159037] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
+[391.567306102] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
+[391.567980484] Server 1: Worker 192 current status: Blocked
+[391.569068765] Server 1: Processing WAKE for worker 192 in state Blocked
+[391.569747395] Server 1: Worker 192 woke up from blocked state, resuming task
+[391.570836158] Server 1: Updated worker 192 status from Blocked to Running
+[391.571568034] Server 1: Context switching to unblocked worker 192 to resume task
+[8.242958, 7, umcg] cmd 6
+[8.243112, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
+[8.243474, 7, umcg] server->worker ctx switch: worker 192 now RUNNING
+[8.243986, 7, umcg] ctx switch complete - proceeding with server wait
+[391.459103179] !!!! Initial task 0 on Worker 192: ABOUT TO SLEEP !!!!
+[8.245495, 7, umcg] worker 192 blocked in syscall
+[391.575389227] Server 1: Context switch for unblocked worker 192 returned 0
+[391.578090714] Server 1: Switch events converted: [Some(Block), None]
+[391.579732935] Server 1: Got event Some(Block) from context switch in handle_event
+[391.580259310] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 1, caller: handle_event
+[391.580776465] Server 1: Worker 192 current status: Running
+[391.581333301] Server 1: Worker 192 blocked while in running queue
+[391.581640321] Server 1: Processing BLOCK for worker 192 in state Running
+[391.582206619] Server 1: Updated worker 192 status from Running to Blocked
+[391.582586774] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 1 !!!!
+[391.583722072] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
+[391.585000454] Server 1: Processing event type from ring buffer 2 for worker 224 (raw: 0xe2)
+[391.586215307] Server 1: Processing event type 2 from worker 224 (raw event: 226). depth: 0, caller: run_event_loop
+[391.586611200] Server 1: Worker 224 current status: Blocked
+[391.587324587] Server 1: Processing WAKE for worker 224 in state Blocked
+[391.587841163] Server 1: Worker 224 woke up from blocked state, resuming task
+[391.588504249] Server 1: Updated worker 224 status from Blocked to Running
+[391.589070305] Server 1: Context switching to unblocked worker 224 to resume task
+[8.260244, 7, umcg] cmd 6
+[8.260333, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
+[8.260528, 7, umcg] server->worker ctx switch: worker 224 now RUNNING
+[8.260913, 7, umcg] ctx switch complete - proceeding with server wait
+[391.534696557] Worker 1 executing task
+[391.591016939] Starting execution of task after 175.002297ms
+[391.591532211] !!!! Initial task 3: STARTING task on Worker 224 !!!!
+[391.591971549] !!!! Initial task 3 on Worker 224: ABOUT TO SLEEP !!!!
+[8.263286, 7, umcg] worker 224 blocked in syscall
+[391.592898740] Server 1: Context switch for unblocked worker 224 returned 0
+[391.594000150] Server 1: Switch events converted: [Some(Block), None]
+[391.594827946] Server 1: Got event Some(Block) from context switch in handle_event
+[391.595315317] Server 1: Processing event type 1 from worker 224 (raw event: 225). depth: 1, caller: handle_event
+[391.595792791] Server 1: Worker 224 current status: Running
+[391.596108066] Server 1: Worker 224 blocked while in running queue
+[391.596450953] Server 1: Processing BLOCK for worker 224 in state Running
+[391.596893525] Server 1: Updated worker 224 status from Running to Blocked
+[391.597294389] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 224, depth 1 !!!!
+[391.597929043] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 224 depth 0 !!!!
+[391.650724486] Progress: 0/4 tasks completed
+[391.753949048] Progress: 0/4 tasks completed
+[391.808044160] Server 0 event loop check in
+[391.808066511] Server 1 event loop check in
+[391.858190975] Progress: 0/4 tasks completed
+[391.963046943] Progress: 0/4 tasks completed
+[392.69015522] Progress: 0/4 tasks completed
+[392.173386147] Progress: 0/4 tasks completed
+[392.277354991] Progress: 0/4 tasks completed
+[392.308658397] Server 0 event loop check in
+[392.308898847] Server 1 event loop check in
+[392.380796688] Progress: 0/4 tasks completed
+[392.566978089] EventRoutingServer loop checkin
+[392.808971455] Server 0 event loop check in
+[392.809451536] Server 1 event loop check in
+[393.309397858] Server 0 event loop check in
+[393.310018512] Server 1 event loop check in
+[10.132574, 0, umcg] worker 96 event 2
+[10.133002, 0, umcg] server getting event type 2 for worker 96 (status: 0)
+[393.465574607] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
+[393.466610076] Successfully sent event to server 0
+[393.467250571] EventRoutingServer loop checkin
+[393.470043102] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
+[393.470991872] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
+[393.471889471] Server 0: Worker 96 current status: Blocked
+[393.473012798] Server 0: Processing WAKE for worker 96 in state Blocked
+[393.473790196] Server 0: Worker 96 woke up from blocked state, resuming task
+[393.474896965] Server 0: Updated worker 96 status from Blocked to Running
+[393.475825748] Server 0: Context switching to unblocked worker 96 to resume task
+[10.147180, 0, umcg] cmd 6
+[10.147266, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
+[10.147671, 0, umcg] server->worker ctx switch: worker 96 now RUNNING
+[10.148081, 0, umcg] ctx switch complete - proceeding with server wait
+[393.478042618] !!!! Initial task 1 on Worker 96: WOKE UP FROM SLEEP !!!!
+[393.478876688] !!!! Initial task 1 on Worker 96: PREPARING to spawn child task !!!!
+[393.482088477] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 152402733 }
+[393.484574906] Adding task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 155263234 }
+[393.486978689] !!!! Initial task 1 on Worker 96: COMPLETED !!!!
+[393.489912759] Completed task after 2.109326407s
+[393.491237194] Worker 0 signaling ready for work
+[10.162546, 0, umcg] sending event type 3 for worker 96 to server
+[393.492505149] Server 0: Context switch for unblocked worker 96 returned 0
+[393.496052727] Server 0: Switch events converted: [Some(Wait), None]
+[393.497369825] Server 0: Got event Some(Wait) from context switch in handle_event
+[393.498083260] Server 0: Processing event type 3 from worker 96 (raw event: 99). depth: 1, caller: handle_event
+[393.498717238] Server 0: Worker 96 current status: Running
+[393.499581818] Server 0: Got explicit WAIT from worker 96
+[393.500651416] Server 0: Processing explicit WAIT for worker 96 in state Running
+[393.501533279] Server 0: Transitioned worker 96 from Running to Waiting
+[393.502510432] Server 0: Added worker 96 to pending queue
+[393.503586548] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 96 depth 1!!!!
+[393.504476762] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
+[393.505703539] !!!! TRY_SCHEDULE: Found task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8 (dynamic_child_task) for worker 96 created 21.045554ms ago !!!!
+[393.506389989] Server 0: Updated worker 96 status to Running for task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8
+[393.507749229] Server 0: Sent task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8 to worker 96 after 23.200777ms in queue
+[393.508170078] Server 0: Context switching to worker 96 to start task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8
+[10.179512, 0, umcg] cmd 6
+[10.179711, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
+[10.180008, 0, umcg] server->worker ctx switch: worker 96 now RUNNING
+[10.180335, 0, umcg] ctx switch complete - proceeding with server wait
+[393.509947899] Worker 0 executing task
+[393.510552430] Starting execution of task after 28.627503ms
+[393.511455869] !!!! Child task of initial task 1 on Worker 96: STARTING work !!!!
+[10.183099, 0, umcg] worker 96 blocked in syscall
+[393.512492739] Server 0: Context switch returned 0 for worker 96 running task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8
+[393.513656953] Server 0: Switch events converted: [Some(Block), None]
+[393.513995689] Server 0: Got event Some(Block) from context switch while running task 4c58f88d-7ab4-49c8-be84-514d7a1ca3e8
+[393.514682864] Server 0: Processing event type 1 from worker 96 (raw event: 97). depth: 0, caller: try_schedule_tasks
+[393.515217011] Server 0: Worker 96 current status: Running
+[393.515457221] Server 0: Worker 96 blocked while in running queue
+[393.515946956] Server 0: Processing BLOCK for worker 96 in state Running
+[393.516154244] Server 0: Updated worker 96 status from Running to Blocked
+[393.516522281] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 96, depth 0 !!!!
+[10.210654, 0, umcg] worker 128 event 2
+[10.211105, 0, umcg] server getting event type 2 for worker 128 (status: 0)
+[393.541020943] EventRoutingServer: Routing Wake event for worker 128 to server 0 (raw: 0x82)
+[393.541364748] Successfully sent event to server 0
+[393.541851925] Server 0: Processing event type from ring buffer 2 for worker 128 (raw: 0x82)
+[393.542415857] Server 0: Processing event type 2 from worker 128 (raw event: 130). depth: 0, caller: run_event_loop
+[393.542761689] Server 0: Worker 128 current status: Blocked
+[393.543617774] Server 0: Processing WAKE for worker 128 in state Blocked
+[393.544186533] Server 0: Worker 128 woke up from blocked state, resuming task
+[393.545005060] Server 0: Updated worker 128 status from Blocked to Running
+[393.545528105] Server 0: Context switching to unblocked worker 128 to resume task
+[10.216777, 0, umcg] cmd 6
+[10.217036, 0, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
+[10.217611, 0, umcg] server->worker ctx switch: worker 128 now RUNNING
+[10.218195, 0, umcg] ctx switch complete - proceeding with server wait
+[393.547859913] !!!! Initial task 2 on Worker 128: WOKE UP FROM SLEEP !!!!
+[393.548332850] !!!! Initial task 2 on Worker 128: PREPARING to spawn child task !!!!
+[393.549764983] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 220434919 }
+[393.550853601] Adding task 4428314d-e3a4-4f6c-8098-523ff34b6ca6 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 221674343 }
+[393.552135941] !!!! Initial task 2 on Worker 128: COMPLETED !!!!
+[393.553410509] Completed task after 2.152174542s
+[393.554114628] Worker 1 signaling ready for work
+[10.225255, 0, umcg] sending event type 3 for worker 128 to server
+[393.554945320] Server 0: Context switch for unblocked worker 128 returned 0
+[393.556120010] Server 0: Switch events converted: [Some(Wait), None]
+[393.556966970] Server 0: Got event Some(Wait) from context switch in handle_event
+[393.557400371] Server 0: Processing event type 3 from worker 128 (raw event: 131). depth: 1, caller: handle_event
+[393.557822330] Server 0: Worker 128 current status: Running
+[393.558339341] Server 0: Got explicit WAIT from worker 128
+[393.558976987] Server 0: Processing explicit WAIT for worker 128 in state Running
+[393.559620619] Server 0: Transitioned worker 128 from Running to Waiting
+[393.560218729] Server 0: Added worker 128 to pending queue
+[393.560795453] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 128 depth 1!!!!
+[393.561539012] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 128 depth 0 !!!!
+[393.562145617] !!!! TRY_SCHEDULE: Found task 4428314d-e3a4-4f6c-8098-523ff34b6ca6 (dynamic_child_task) for worker 128 created 11.284921ms ago !!!!
+[393.562648918] Server 0: Updated worker 128 status to Running for task 4428314d-e3a4-4f6c-8098-523ff34b6ca6
+[393.563113889] Server 0: Sent task 4428314d-e3a4-4f6c-8098-523ff34b6ca6 to worker 128 after 12.244311ms in queue
+[393.563751874] Server 0: Context switching to worker 128 to start task 4428314d-e3a4-4f6c-8098-523ff34b6ca6
+[10.235077, 0, umcg] cmd 6
+[10.235129, 0, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
+[10.235393, 0, umcg] server->worker ctx switch: worker 128 now RUNNING
+[10.235695, 0, umcg] ctx switch complete - proceeding with server wait
+[393.565204233] Worker 1 executing task
+[393.565553396] Starting execution of task after 15.819839ms
+[393.566342429] !!!! Child task of initial task 2 on Worker 128: STARTING work !!!!
+[10.237598, 0, umcg] worker 128 blocked in syscall
+[393.568828084] Server 0: Context switch returned 0 for worker 128 running task 4428314d-e3a4-4f6c-8098-523ff34b6ca6
+[393.569179275] Server 0: Switch events converted: [Some(Block), None]
+[393.569609055] Server 0: Got event Some(Block) from context switch while running task 4428314d-e3a4-4f6c-8098-523ff34b6ca6
+[393.570190173] Server 0: Processing event type 1 from worker 128 (raw event: 129). depth: 0, caller: try_schedule_tasks
+[393.570616574] Server 0: Worker 128 current status: Running
+[393.570862431] Server 0: Worker 128 blocked while in running queue
+[393.570985867] Server 0: Processing BLOCK for worker 128 in state Running
+[393.571615885] Server 0: Updated worker 128 status from Running to Blocked
+[393.572002316] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Block) for worker 128, depth 0 !!!!
+[10.247392, 7, umcg] worker 192 event 2
+[10.247606, 7, umcg] server getting event type 2 for worker 192 (status: 0)
+[393.577286924] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
+[393.577693678] Successfully sent event to server 1
+[393.577874606] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
+[393.578350777] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
+[393.578825018] Server 1: Worker 192 current status: Blocked
+[393.579160760] Server 1: Processing WAKE for worker 192 in state Blocked
+[393.579631428] Server 1: Worker 192 woke up from blocked state, resuming task
+[393.579937917] Server 1: Updated worker 192 status from Blocked to Running
+[393.580300597] Server 1: Context switching to unblocked worker 192 to resume task
+[10.251558, 7, umcg] cmd 6
+[10.251758, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
+[10.252004, 7, umcg] server->worker ctx switch: worker 192 now RUNNING
+[10.252287, 7, umcg] ctx switch complete - proceeding with server wait
+[393.582528810] !!!! Initial task 0 on Worker 192: WOKE UP FROM SLEEP !!!!
+[393.582981810] !!!! Initial task 0 on Worker 192: PREPARING to spawn child task !!!!
+[393.583955585] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 254764741 }
+[393.584975799] Adding task 967dc022-4ea5-4491-96fd-2960245ed199 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 255690774 }
+[393.586068423] !!!! Initial task 0 on Worker 192: COMPLETED !!!!
+[393.587185909] Completed task after 2.298805909s
+[393.588346165] Worker 0 signaling ready for work
+[10.259827, 7, umcg] sending event type 3 for worker 192 to server
+[393.589277701] Server 1: Context switch for unblocked worker 192 returned 0
+[393.589944650] Server 1: Switch events converted: [Some(Wait), None]
+[393.590288599] Server 1: Got event Some(Wait) from context switch in handle_event
+[393.590676381] Server 1: Processing event type 3 from worker 192 (raw event: 195). depth: 1, caller: handle_event
+[393.591151200] Server 1: Worker 192 current status: Running
+[393.591981940] Server 1: Got explicit WAIT from worker 192
+[393.593061194] Server 1: Processing explicit WAIT for worker 192 in state Running
+[10.264469, 0, umcg] worker 224 event 2
+[10.264600, 0, umcg] server getting event type 2 for worker 224 (status: 0)
+[393.594595328] EventRoutingServer: Routing Wake event for worker 224 to server 1 (raw: 0xe2)
+[393.595283372] Successfully sent event to server 1
+[393.595066383] Server 1: Transitioned worker 192 from Running to Waiting
+[393.596250244] Server 1: Added worker 192 to pending queue
+[393.597224550] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 192 depth 1!!!!
+[393.597832991] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
+[393.598387655] Server 1: Processing event type from ring buffer 2 for worker 224 (raw: 0xe2)
+[393.598751783] Server 1: Processing event type 2 from worker 224 (raw event: 226). depth: 0, caller: run_event_loop
+[393.599142365] Server 1: Worker 224 current status: Blocked
+[393.599638086] Server 1: Processing WAKE for worker 224 in state Blocked
+[393.599943755] Server 1: Worker 224 woke up from blocked state, resuming task
+[393.600483019] Server 1: Updated worker 224 status from Blocked to Running
+[393.601071378] Server 1: Context switching to unblocked worker 224 to resume task
+[10.272357, 7, umcg] cmd 6
+[10.272603, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
+[10.272890, 7, umcg] server->worker ctx switch: worker 224 now RUNNING
+[10.273230, 7, umcg] ctx switch complete - proceeding with server wait
+[393.603408448] !!!! Initial task 3 on Worker 224: WOKE UP FROM SLEEP !!!!
+[393.604143510] !!!! Initial task 3 on Worker 224: PREPARING to spawn child task !!!!
+[393.604716808] Creating task of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 275523261 }
+[393.605361067] Adding task dd501573-8723-4eb6-92cf-1dbd6b017c43 of type dynamic_child_task at Instant { tv_sec: 10, tv_nsec: 276142515 }
+[393.606121280] !!!! Initial task 3 on Worker 224: COMPLETED !!!!
+[393.606506406] Completed task after 2.190846769s
+[393.606747678] Worker 1 signaling ready for work
+[10.278188, 7, umcg] sending event type 3 for worker 224 to server
+[393.607679455] Server 1: Context switch for unblocked worker 224 returned 0
+[393.608300109] Server 1: Switch events converted: [Some(Wait), None]
+[393.608545194] Server 1: Got event Some(Wait) from context switch in handle_event
+[393.609012096] Server 1: Processing event type 3 from worker 224 (raw event: 227). depth: 1, caller: handle_event
+[393.609452641] Server 1: Worker 224 current status: Running
+[393.610108197] Server 1: Got explicit WAIT from worker 224
+[393.610746808] Server 1: Processing explicit WAIT for worker 224 in state Running
+[393.611399902] Server 1: Transitioned worker 224 from Running to Waiting
+[393.612493782] Server 1: Added worker 224 to pending queue
+[393.613136593] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 224 depth 1!!!!
+[393.613687926] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 224 depth 0 !!!!
+[393.614314952] !!!! TRY_SCHEDULE: Found task 967dc022-4ea5-4491-96fd-2960245ed199 (dynamic_child_task) for worker 192 created 29.424211ms ago !!!!
+[393.616564695] Server 1: Updated worker 192 status to Running for task 967dc022-4ea5-4491-96fd-2960245ed199
+[393.617873682] Server 1: Sent task 967dc022-4ea5-4491-96fd-2960245ed199 to worker 192 after 32.952288ms in queue
+[393.618917454] Server 1: Context switching to worker 192 to start task 967dc022-4ea5-4491-96fd-2960245ed199
+[10.290131, 7, umcg] cmd 6
+[10.290357, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
+[10.290644, 7, umcg] server->worker ctx switch: worker 192 now RUNNING
+[10.290920, 7, umcg] ctx switch complete - proceeding with server wait
+[393.620770436] Worker 0 executing task
+[393.621903708] Starting execution of task after 37.948076ms
+[393.622521561] !!!! Child task of initial task 0 on Worker 192: STARTING work !!!!
+[10.293875, 7, umcg] worker 192 blocked in syscall
+[393.623302194] Server 1: Context switch returned 0 for worker 192 running task 967dc022-4ea5-4491-96fd-2960245ed199
+[393.624109956] Server 1: Switch events converted: [Some(Block), None]
+[393.624634690] Server 1: Got event Some(Block) from context switch while running task 967dc022-4ea5-4491-96fd-2960245ed199
+[393.625227346] Server 1: Processing event type 1 from worker 192 (raw event: 193). depth: 0, caller: try_schedule_tasks
+[393.626078892] Server 1: Worker 192 current status: Running
+[393.626340294] Server 1: Worker 192 blocked while in running queue
+[393.626720110] Server 1: Processing BLOCK for worker 192 in state Running
+[393.627034371] Server 1: Updated worker 192 status from Running to Blocked
+[393.627484426] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 192, depth 0 !!!!
+[393.628372177] !!!! TRY_SCHEDULE: Found task dd501573-8723-4eb6-92cf-1dbd6b017c43 (dynamic_child_task) for worker 224 created 22.956996ms ago !!!!
+[393.629422660] Server 1: Updated worker 224 status to Running for task dd501573-8723-4eb6-92cf-1dbd6b017c43
+[393.630195906] Server 1: Sent task dd501573-8723-4eb6-92cf-1dbd6b017c43 to worker 224 after 24.794868ms in queue
+[393.631034708] Server 1: Context switching to worker 224 to start task dd501573-8723-4eb6-92cf-1dbd6b017c43
+[10.302342, 7, umcg] cmd 6
+[10.302640, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
+[10.302860, 7, umcg] server->worker ctx switch: worker 224 now RUNNING
+[10.303062, 7, umcg] ctx switch complete - proceeding with server wait
+[393.632540555] Worker 1 executing task
+[393.632862106] Starting execution of task after 28.162629ms
+[393.633637815] !!!! Child task of initial task 3 on Worker 224: STARTING work !!!!
+[10.304874, 7, umcg] worker 224 blocked in syscall
+[393.634292067] Server 1: Context switch returned 0 for worker 224 running task dd501573-8723-4eb6-92cf-1dbd6b017c43
+[393.634686944] Server 1: Switch events converted: [Some(Block), None]
+[393.635021578] Server 1: Got event Some(Block) from context switch while running task dd501573-8723-4eb6-92cf-1dbd6b017c43
+[393.635451406] Server 1: Processing event type 1 from worker 224 (raw event: 225). depth: 0, caller: try_schedule_tasks
+[393.635873220] Server 1: Worker 224 current status: Running
+[393.636214997] Server 1: Worker 224 blocked while in running queue
+[393.636555664] Server 1: Processing BLOCK for worker 224 in state Running
+[393.636896910] Server 1: Updated worker 224 status from Running to Blocked
+[393.637262727] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Block) for worker 224, depth 0 !!!!
+[393.809714971] Server 0 event loop check in
+[393.810370140] Server 1 event loop check in
+[394.309884270] Server 0 event loop check in
+[394.310614118] Server 1 event loop check in
+[11.186115, 7, umcg] worker 96 event 2
+[11.186239, 7, umcg] server getting event type 2 for worker 96 (status: 0)
+[394.516044910] EventRoutingServer: Routing Wake event for worker 96 to server 0 (raw: 0x62)
+[394.516621201] Server 0: Processing event type from ring buffer 2 for worker 96 (raw: 0x62)
+[394.516615600] Successfully sent event to server 0
+[394.517237316] Server 0: Processing event type 2 from worker 96 (raw event: 98). depth: 0, caller: run_event_loop
+[394.518365615] Server 0: Worker 96 current status: Blocked
+[394.518849944] Server 0: Processing WAKE for worker 96 in state Blocked
+[394.519423000] Server 0: Worker 96 woke up from blocked state, resuming task
+[394.517731107] EventRoutingServer loop checkin
+[394.519979016] Server 0: Updated worker 96 status from Blocked to Running
+[394.520769930] Server 0: Context switching to unblocked worker 96 to resume task
+[11.191887, 0, umcg] cmd 6
+[11.191950, 0, umcg] ctx switch request: tid 3, timeout 0, event_sz 2
+[11.192225, 0, umcg] server->worker ctx switch: worker 96 now RUNNING
+[11.192466, 0, umcg] ctx switch complete - proceeding with server wait
+[394.522229676] !!!! Child task of initial task 1 on Worker 96: COMPLETED !!!!
+[394.523343975] Completed task after 1.041443139s
+[394.523963374] Worker 0 signaling ready for work
+[11.195039, 0, umcg] sending event type 3 for worker 96 to server
+[394.524479902] Server 0: Context switch for unblocked worker 96 returned 0
+[394.524876856] Server 0: Switch events converted: [Some(Wait), None]
+[394.525143808] Server 0: Got event Some(Wait) from context switch in handle_event
+[394.525473565] Server 0: Processing event type 3 from worker 96 (raw event: 99). depth: 1, caller: handle_event
+[394.525863037] Server 0: Worker 96 current status: Running
+[394.526024078] Server 0: Got explicit WAIT from worker 96
+[394.526628029] Server 0: Processing explicit WAIT for worker 96 in state Running
+[394.527120565] Server 0: Transitioned worker 96 from Running to Waiting
+[394.527595673] Server 0: Added worker 96 to pending queue
+[394.527865909] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 96 depth 1!!!!
+[394.528216569] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 96 depth 0 !!!!
+[11.239250, 7, umcg] worker 128 event 2
+[11.239399, 7, umcg] server getting event type 2 for worker 128 (status: 0)
+[394.568993911] EventRoutingServer: Routing Wake event for worker 128 to server 0 (raw: 0x82)
+[394.569480895] Successfully sent event to server 0
+[394.569499528] Server 0: Processing event type from ring buffer 2 for worker 128 (raw: 0x82)
+[394.570343786] Server 0: Processing event type 2 from worker 128 (raw event: 130). depth: 0, caller: run_event_loop
+[394.570775207] Server 0: Worker 128 current status: Blocked
+[394.570957488] Server 0: Processing WAKE for worker 128 in state Blocked
+[394.571325864] Server 0: Worker 128 woke up from blocked state, resuming task
+[394.571667593] Server 0: Updated worker 128 status from Blocked to Running
+[394.572027955] Server 0: Context switching to unblocked worker 128 to resume task
+[11.243152, 0, umcg] cmd 6
+[11.243202, 0, umcg] ctx switch request: tid 4, timeout 0, event_sz 2
+[11.243580, 0, umcg] server->worker ctx switch: worker 128 now RUNNING
+[11.243778, 0, umcg] ctx switch complete - proceeding with server wait
+[394.573406312] !!!! Child task of initial task 2 on Worker 128: COMPLETED !!!!
+[394.574118299] Completed task after 1.024376246s
+[394.574414023] Worker 1 signaling ready for work
+[11.245524, 0, umcg] sending event type 3 for worker 128 to server
+[394.574951743] Server 0: Context switch for unblocked worker 128 returned 0
+[394.575285265] Server 0: Switch events converted: [Some(Wait), None]
+[394.575560424] Server 0: Got event Some(Wait) from context switch in handle_event
+[394.576000245] Server 0: Processing event type 3 from worker 128 (raw event: 131). depth: 1, caller: handle_event
+[394.576373207] Server 0: Worker 128 current status: Running
+[394.576805691] Server 0: Got explicit WAIT from worker 128
+[394.577121593] Server 0: Processing explicit WAIT for worker 128 in state Running
+[394.577313770] Server 0: Transitioned worker 128 from Running to Waiting
+[394.577678526] Server 0: Added worker 128 to pending queue
+[394.577929307] !!!! EVENT_HANDLER: Server 0 Completed processing event type 3 for worker 128 depth 1!!!!
+[394.578372845] !!!! EVENT_HANDLER: Server 0 Completed processing event type Some(Wake) for worker 128 depth 0 !!!!
+[11.296540, 0, umcg] worker 192 event 2
+[11.296661, 0, umcg] server getting event type 2 for worker 192 (status: 0)
+[394.626587509] EventRoutingServer: Routing Wake event for worker 192 to server 1 (raw: 0xc2)
+[394.626940244] Successfully sent event to server 1
+[394.626976932] Server 1: Processing event type from ring buffer 2 for worker 192 (raw: 0xc2)
+[394.627691912] Server 1: Processing event type 2 from worker 192 (raw event: 194). depth: 0, caller: run_event_loop
+[394.628035910] Server 1: Worker 192 current status: Blocked
+[394.628413844] Server 1: Processing WAKE for worker 192 in state Blocked
+[394.628864333] Server 1: Worker 192 woke up from blocked state, resuming task
+[394.629202732] Server 1: Updated worker 192 status from Blocked to Running
+[394.629650179] Server 1: Context switching to unblocked worker 192 to resume task
+[11.300818, 7, umcg] cmd 6
+[11.301013, 7, umcg] ctx switch request: tid 6, timeout 0, event_sz 2
+[11.301273, 7, umcg] server->worker ctx switch: worker 192 now RUNNING
+[11.301423, 7, umcg] ctx switch complete - proceeding with server wait
+[394.631405842] !!!! Child task of initial task 0 on Worker 192: COMPLETED !!!!
+[394.632324102] Completed task after 1.048374457s
+[394.633183952] Worker 0 signaling ready for work
+[11.304405, 7, umcg] sending event type 3 for worker 192 to server
+[394.633886140] Server 1: Context switch for unblocked worker 192 returned 0
+[394.634219566] Server 1: Switch events converted: [Some(Wait), None]
+[394.634505877] Server 1: Got event Some(Wait) from context switch in handle_event
+[394.634767278] Server 1: Processing event type 3 from worker 192 (raw event: 195). depth: 1, caller: handle_event
+[394.635201451] Server 1: Worker 192 current status: Running
+[394.635442819] Server 1: Got explicit WAIT from worker 192
+[394.635795168] Server 1: Processing explicit WAIT for worker 192 in state Running
+[394.636188743] Server 1: Transitioned worker 192 from Running to Waiting
+[394.636855160] Server 1: Added worker 192 to pending queue
+[394.637051682] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 192 depth 1!!!!
+[394.637381535] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 192 depth 0 !!!!
+[11.306040, 0, umcg] worker 224 event 2
+[11.309149, 0, umcg] server getting event type 2 for worker 224 (status: 0)
+[394.639878101] EventRoutingServer: Routing Wake event for worker 224 to server 1 (raw: 0xe2)
+[394.640526561] Successfully sent event to server 1
+[394.640548477] Server 1: Processing event type from ring buffer 2 for worker 224 (raw: 0xe2)
+[394.641530410] Server 1: Processing event type 2 from worker 224 (raw event: 226). depth: 0, caller: run_event_loop
+[394.642021836] Server 1: Worker 224 current status: Blocked
+[394.642436409] Server 1: Processing WAKE for worker 224 in state Blocked
+[394.642843790] Server 1: Worker 224 woke up from blocked state, resuming task
+[394.643229014] Server 1: Updated worker 224 status from Blocked to Running
+[394.643554088] Server 1: Context switching to unblocked worker 224 to resume task
+[11.314761, 7, umcg] cmd 6
+[11.314849, 7, umcg] ctx switch request: tid 7, timeout 0, event_sz 2
+[11.315165, 7, umcg] server->worker ctx switch: worker 224 now RUNNING
+[11.315515, 7, umcg] ctx switch complete - proceeding with server wait
+[394.645356625] !!!! Child task of initial task 3 on Worker 224: COMPLETED !!!!
+[394.645935136] Completed task after 1.041228708s
+[394.652010369] All tasks completed successfully (8/8)
+[394.658548498] Worker 1 signaling ready for work
+[11.330042, 7, umcg] sending event type 3 for worker 224 to server
+[394.659408926] Server 1: Context switch for unblocked worker 224 returned 0
+[394.659823693] Server 1: Switch events converted: [Some(Wait), None]
+[394.660004816] Server 1: Got event Some(Wait) from context switch in handle_event
+[394.660275003] Server 1: Processing event type 3 from worker 224 (raw event: 227). depth: 1, caller: handle_event
+[394.660728389] Server 1: Worker 224 current status: Running
+[394.660990514] Server 1: Got explicit WAIT from worker 224
+[394.661381338] Server 1: Processing explicit WAIT for worker 224 in state Running
+[394.663305572] Server 1: Transitioned worker 224 from Running to Waiting
+[394.663628715] Server 1: Added worker 224 to pending queue
+[394.665657028] !!!! EVENT_HANDLER: Server 1 Completed processing event type 3 for worker 224 depth 1!!!!
+[394.676986312] !!!! EVENT_HANDLER: Server 1 Completed processing event type Some(Wake) for worker 224 depth 0 !!!!
+➜  /app git:(master) ✗

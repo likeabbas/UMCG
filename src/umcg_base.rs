@@ -34,7 +34,7 @@ fn debug_worker_id(worker_id: u64) -> String {
     format!("server:{} tid:{} (raw:{})", server_id, tid, worker_id)
 }
 
-pub const SYS_UMCG_CTL: i64 = 450;
+pub const SYS_UMCG_CTL: i64 = 449;
 pub const UMCG_WORKER_ID_SHIFT: u64 = 5;
 pub const UMCG_WORKER_EVENT_MASK: u64 = (1 << UMCG_WORKER_ID_SHIFT) - 1;
 pub const UMCG_WAIT_FLAG_INTERRUPTED: u64 = 1;

@@ -12,6 +12,7 @@ use crate::{umcg_base, ServerError};
 use crate::umcg_base::{umcg_wait_retry_simple, umcg_wait_retry_timeout, UmcgCmd, UmcgEventType, WaitNoTimeoutResult, WaitResult, DEBUG_LOGGING, EVENT_BUFFER_SIZE, SYS_UMCG_CTL, UMCG_WAIT_FLAG_INTERRUPTED, UMCG_WORKER_EVENT_MASK, UMCG_WORKER_ID_SHIFT, WORKER_REGISTRATION_TIMEOUT_MS};
 use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
+use std::iter::Map;
 use std::ops::Deref;
 use std::os::unix::io::AsRawFd;
 use std::panic;
@@ -149,10 +150,17 @@ impl Worker {
             )
         };
 
+        if reg_result == -1 {
+            let errno = unsafe { *libc::__errno_location() };
+            debug!("Syscall failed with errno: {} ({})", errno, std::io::Error::last_os_error());
+        }
+
         if reg_result != 0 {
             debug!("Worker {} UMCG registration failed: {}", self.id, reg_result);
             return;
         }
+
+
 
         debug!("Worker {} UMCG registration complete", self.id);
 
@@ -329,7 +337,7 @@ impl EventRoutingServer {
             if let Err(e) = set_cpu_affinity(self.id) {
                 debug!("Failed to set CPU affinity for server {}: {}", self.id, e);
             } else {
-                debug!("Server {} CPU affinity set to CPU {}", self.id, self.id);
+                debug!("EventRoutingServer {} CPU affinity set to CPU {}", self.id, self.id);
             }
 
             // Register server with UMCG
@@ -352,8 +360,10 @@ impl EventRoutingServer {
                 return;
             }
 
+
             let mut last_debug_print = Instant::now();
             while !self.done.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_secs(1));
                 // Check if 500ms have elapsed since last print
                 if last_debug_print.elapsed() >= Duration::from_millis(500) {
                     debug!("EventRoutingServer loop checkin");
@@ -367,7 +377,7 @@ impl EventRoutingServer {
                     0,
                     Some(&mut events),
                     10i32,
-                    1_000_000_000,
+                    50_000,
 
                 ) {
                     WaitResult::Events(ret) => {
@@ -469,7 +479,7 @@ impl Server {
             if let Err(e) = set_cpu_affinity(self.id) {
                 debug!("Failed to set CPU affinity for server {}: {}", self.id, e);
             } else {
-                debug!("Server {} CPU affinity set to CPU {}", self.id, self.id);
+                // debug!("Server {} CPU affinity set to CPU {}", self.id, self.id);
             }
 
             // Register server with UMCG
@@ -1000,6 +1010,7 @@ impl Server {
                             debug!("Server {}: Updated worker {} status from Blocked to Running",
                             self.id, worker_id);
                         }
+
 
                         // Do context switch after releasing lock
                         debug!("Server {}: Context switching to unblocked worker {} to resume task",
@@ -1593,37 +1604,37 @@ impl TaskHandle {
 // }
 
 fn set_cpu_affinity(cpu_id: usize) -> std::io::Result<()> {
-    // #[cfg(target_os = "linux")]
-    // unsafe {
-    //     let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
-    //     let set_ref = &mut *set.as_mut_ptr();
-    //
-    //     libc::CPU_ZERO(set_ref);
-    //     libc::CPU_SET(cpu_id, set_ref);
-    //
-    //     // Set real-time scheduling priority
-    //     let mut param: libc::sched_param = std::mem::zeroed();
-    //     param.sched_priority = 1;  // Minimum RT priority
-    //
-    //     // Try to set SCHED_FIFO, but don't fail if we can't
-    //     let _ = libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
-    //
-    //     let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
-    //     if result != 0 {
-    //         debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
-    //     } else {
-    //         debug!("Successfully set CPU affinity to {}", cpu_id);
-    //     }
-    //
-    //     // Verify the affinity was set
-    //     let mut verify_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
-    //     if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), verify_set.as_mut_ptr()) == 0 {
-    //         let verify_set = verify_set.assume_init();
-    //         if !libc::CPU_ISSET(cpu_id, &verify_set) {
-    //             debug!("WARNING: CPU affinity verification failed for CPU {}", cpu_id);
-    //         }
-    //     }
-    // }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+        let set_ref = &mut *set.as_mut_ptr();
+
+        libc::CPU_ZERO(set_ref);
+        libc::CPU_SET(cpu_id, set_ref);
+
+        // Set real-time scheduling priority
+        let mut param: libc::sched_param = std::mem::zeroed();
+        param.sched_priority = 1;  // Minimum RT priority
+
+        // Try to set SCHED_FIFO, but don't fail if we can't
+        let _ = libc::sched_setscheduler(0, libc::SCHED_FIFO, &param);
+
+        let result = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), set.as_ptr());
+        if result != 0 {
+            debug!("Could not set CPU affinity to {}: {}", cpu_id, std::io::Error::last_os_error());
+        } else {
+            debug!("Successfully set CPU affinity to {}", cpu_id);
+        }
+
+        // Verify the affinity was set
+        let mut verify_set = std::mem::MaybeUninit::<libc::cpu_set_t>::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), verify_set.as_mut_ptr()) == 0 {
+            let verify_set = verify_set.assume_init();
+            if !libc::CPU_ISSET(cpu_id, &verify_set) {
+                debug!("WARNING: CPU affinity verification failed for CPU {}", cpu_id);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1766,8 +1777,8 @@ impl ServerRouter {
 }
 
 pub fn run_dynamic_task_attempt2_demo() -> i32 {
-    const WORKER_COUNT: usize = 2;
-    const SERVER_COUNT: usize = 2;  // Changed this to test multiple servers
+    const WORKER_COUNT: usize = 3;
+    const SERVER_COUNT: usize = 3;  // Changed this to test multiple servers
     const QUEUE_CAPACITY: usize = 100000;
     const CHANNEL_SIZE: usize = 10000;
 
@@ -1862,7 +1873,7 @@ pub fn run_dynamic_task_attempt2_demo() -> i32 {
     debug!("Submitting initial tasks...");
 
     // Submit initial tasks that will spawn child tasks
-    for i in 0..4 {
+    for i in 0..10 {
         let parent_task_handle = task_handle.clone();
         let parent_id = i;
 
